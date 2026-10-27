@@ -33,3 +33,12 @@ Listed in AGENTS.md "Mail.app notes": draft id stability on IMAP sync, attachmen
 - `make new outgoing message` with `visible:false` + `save`: the draft never reached any Drafts mailbox (unified or per account: iCloud, SMU, IMC). Read-back correctly failed with `DRAFT_NOT_SAVED` after 30s.
 - The hidden outgoing message stays in `Mail.outgoingMessages()`. `close o saving no` does nothing, and neither does `set visible to true` followed by `close saving no`. Only quitting Mail clears it.
 - Take 2 must: create drafts by a route that actually lands in Drafts (to be probed live), and clean up its own outgoing message on every failure path.
+
+## Live probes (2026-10-27, user-approved, iCloud account only)
+
+- `make new outgoing message` with `visible:true`, sender `Kim Sia <kimsia.sim@icloud.com>`, one to recipient, one attachment added `at after last paragraph`, `delay 2`, `save`: the draft landed in iCloud Drafts with attachments=1, the right sender and the right to. Confirmed.
+- After `save`, the visible outgoing message stays open. `close o saving no` on a visible one closes it and the saved draft survives. Confirmed.
+- The draft id (283100) was unchanged about a minute later (iCloud IMAP), and attachments still 1. Not yet tested on Exchange or other IMAP.
+- `osa/delete-draft.js <id>` worked unchanged: it found the draft through `draftsMailbox()` and moved it to iCloud "Deleted Messages". Confirmed.
+- `left` is a reserved word in AppleScript (-10003); avoid it as a variable name.
+- Probes B (`close saving yes`) and C (.eml handoff) were skipped because A covers the path.
