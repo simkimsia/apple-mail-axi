@@ -66,3 +66,9 @@ Listed under "UNVERIFIED" in AGENTS.md "Mail.app notes": outgoing message `id` (
 - Change: The script returns after `save` with the window open (it still closes it on its own error path). The core verifies first, closes our window by outgoing id (new since preflight, exact subject) on every path, then reads the draft once more after the close. No fixed post-save delay; the existing 30 s read-back budget bounds how long the window shows.
 - Keep: everything take 2 kept, plus the take-2 script as a test fixture (`test/fixtures/create-draft.take2.applescript`) so the close-too-early order stays a failing case.
 - No take 4. If the live smoke still loses the attachment with the window held open until the read-back matches, the gap is upstream in what we know about Mail, not in this code: either the read-back reports attachments before they are durably written (count from the unsaved copy), or Mail rewrites the draft on close. Probe that live (read the draft after close and again a minute later) before changing code.
+
+## Live run 3 (2026-10-27, user-approved, iCloud only): PASS
+
+- Take 3 (ee16abc) smoke passed in 5.3s: created from iCloud, saved (id 285515), verified with the compose window open (attachments 1 of 1 on the first poll), closed our compose window by id via `discard-outgoing`, re-verified after the close, then listed, viewed and deleted the draft.
+- Afterwards: 0 smoke drafts left in iCloud Drafts and 0 outgoing messages. Confirmed.
+- Keeping the window open until the read-back matches fixes the attachment drop. Confirmed.
