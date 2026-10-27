@@ -621,20 +621,21 @@ function readBackError(
   from: ResolvedSender,
   lastSeen: DraftDetail | undefined,
   deps: CoreDeps,
+  verifiedId?: string,
 ): AxiError {
   const seconds = Math.round(deps.verifyTimeoutMs / 1000);
   if (!lastSeen) {
     const where = from.account ? `the ${from.account} Drafts` : "Drafts";
-    return new AxiError(
-      `Mail did not show the new draft in ${where} within ${seconds}s`,
-      "DRAFT_NOT_SAVED",
+    const what =
+      verifiedId === undefined
+        ? `Mail did not show the new draft in ${where} within ${seconds}s`
+        : `Draft ${verifiedId} was verified before the compose window closed, but Mail did not show it in ${where} within ${seconds}s after`;
+    return new AxiError(what, "DRAFT_NOT_SAVED", [
       [
-        [
-          call("draft_list"),
-          " to check whether it appeared late before creating it again, or you may get a duplicate",
-        ],
+        call("draft_list"),
+        " to check whether it appeared late before creating it again, or you may get a duplicate",
       ],
-    );
+    ]);
   }
   const diffs = compareDraft(draft, lastSeen, from.address);
   return new AxiError(
@@ -659,8 +660,8 @@ function readBackError(
  *    subject, sender and attachment count match. Live run 2 showed that
  *    closing right after `save` drops the attachment.
  * 6. Close our compose window without saving, on every path.
- * 7. On a match, read the draft once more after the close to confirm it
- *    survived; otherwise raise the read-back error.
+ * 7. On a match, read the draft once more after the close, with a fresh
+ *    budget, to confirm it survived; otherwise raise the read-back error.
  */
 export async function createDraft(
   input: CreateDraftInput,
@@ -706,11 +707,11 @@ export async function createDraft(
   if (left > 0) throw composeLeftOpenError(draft.subject);
 
   // The window is closed now; confirm the saved draft survived the close.
-  const after = await awaitSavedDraft(deps, draft, from, known, started);
+  const after = await awaitSavedDraft(deps, draft, from, known, deps.now());
   if (after.match) {
     return { draft: after.match, verifiedAfterMs: deps.now() - started };
   }
-  throw readBackError(draft, from, after.lastSeen ?? verified, deps);
+  throw readBackError(draft, from, after.lastSeen, deps, verified?.id);
 }
 
 export async function listDrafts(

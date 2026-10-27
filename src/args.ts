@@ -80,56 +80,6 @@ export function takeBoolFlag(args: string[], flag: string): boolean {
   return true;
 }
 
-/**
- * Take an integer flag, defaulting when absent and clamping to [1, max].
- * Non-integers are a VALIDATION_ERROR; values above max are clamped rather
- * than rejected so an agent asking for "everything" still gets a bounded page.
- */
-export function takeIntFlag(
-  args: string[],
-  flag: string,
-  fallback: number,
-  max: number,
-): number {
-  const raw = takeFlag(args, flag);
-  if (raw === undefined) return fallback;
-  if (!/^\d+$/.test(raw)) {
-    throw new AxiError(
-      `${flag} must be a positive integer, got ${raw}`,
-      "VALIDATION_ERROR",
-      [`Pass a whole number of at least 1, e.g. \`${flag} ${fallback}\``],
-    );
-  }
-  const n = Number(raw);
-  if (n < 1) {
-    throw new AxiError(`${flag} must be at least 1`, "VALIDATION_ERROR", [
-      `Pass a whole number of at least 1, e.g. \`${flag} ${fallback}\``,
-    ]);
-  }
-  return Math.min(n, max);
-}
-
-/**
- * Take an integer flag that may be zero (an offset), defaulting when absent.
- * Negative numbers and non-integers are a VALIDATION_ERROR.
- */
-export function takeNonNegativeIntFlag(
-  args: string[],
-  flag: string,
-  fallback: number,
-): number {
-  const raw = takeFlag(args, flag);
-  if (raw === undefined) return fallback;
-  if (!/^\d+$/.test(raw)) {
-    throw new AxiError(
-      `${flag} must be a whole number of 0 or more, got ${raw}`,
-      "VALIDATION_ERROR",
-      [`Pass a whole number of at least 0, e.g. \`${flag} ${fallback}\``],
-    );
-  }
-  return Number(raw);
-}
-
 /** Take the first positional (non-option) token out of args, if any. */
 export function takePositional(args: string[]): string | undefined {
   const idx = args.findIndex((a) => !isOptionToken(a));

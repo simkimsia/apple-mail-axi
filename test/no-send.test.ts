@@ -3,6 +3,10 @@
  * Mail's outbox. Every script Mail runs is a bundled file in osa/, so
  * scanning those files (and proving no script text lives anywhere else) is
  * enough. Comments count too: rewording is cheaper than an exception.
+ *
+ * This is declared policy lint over the shipped script and source files,
+ * not a behavioural test: AppleScript and JXA cannot run offline in CI. The
+ * live smoke test (test/live.smoke.test.ts) is the behavioural proof.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -53,7 +57,7 @@ describe("no-send guard patterns", () => {
   }
 });
 
-describe("no-send guard", () => {
+describe("policy lint: no-send guard over osa/ and src/", () => {
   const files = readdirSync(OSA);
 
   it("ships exactly the scripts the runner knows", () => {

@@ -155,13 +155,16 @@ Automation switched off, an unknown `--from`.
 - `test/outgoing.test.ts` requires that create leaves no outgoing message of
   its own on success and on every failure path (including osascript being
   killed mid-script and the read-back failing), never touches the user's
-  own compose windows, and that `osa/create-draft.applescript` composes
-  visibly, closes its message on the error path, and does NOT close it
-  after a successful save. `test/fake-mail.ts` reads the real script to
-  decide whether it closes after save, and only gives a saved draft its
-  attachments if a later call finds the window still open; the regression
-  test runs take 2's script (`test/fixtures/create-draft.take2.applescript`)
-  and expects `DRAFT_MISMATCH attachments 0 of 1`.
+  own compose windows. `test/fake-mail.ts` gives a saved draft its
+  attachments only if a later runner call finds the window still open at
+  least `attachWriteMs` after the save; the regression closes the window
+  right after save, as take 2 did, and expects
+  `DRAFT_MISMATCH attachments 0 of 1`.
+- `test/no-send.test.ts` and the "policy lint" block of
+  `test/outgoing.test.ts` (visible compose, close on the error path, open
+  after a save, reserved words) are declared policy lint over the shipped
+  files, not behavioural tests: AppleScript cannot run offline in CI. The
+  live smoke test is the behavioural proof.
 - Delete looks a draft up only inside `draftsMailbox()`, so any other id is
   `DRAFT_NOT_FOUND`, and the id must be all digits.
 

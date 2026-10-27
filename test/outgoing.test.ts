@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AxiError } from "../src/core/errors.js";
 import { createDraft, type CreateDraftInput } from "../src/core/drafts.js";
+import type { OsaRunner } from "../src/core/runner.js";
 import {
-  closesAfterSave,
   draft,
   FakeMail,
   fakeDeps,
@@ -136,34 +136,80 @@ describe("create leaves no outgoing message behind", () => {
 });
 
 describe("attachments survive: the window stays open until the draft is verified", () => {
-  const take2 = readFileSync(
-    join(import.meta.dirname, "fixtures", "create-draft.take2.applescript"),
-    "utf-8",
-  );
-
-  it("reads the close-after-save order from the script text", () => {
-    expect(closesAfterSave(take2)).toBe(true);
-    expect(
-      closesAfterSave(
-        readFileSync(
-          join(import.meta.dirname, "..", "osa", "create-draft.applescript"),
-          "utf-8",
-        ),
-      ),
-    ).toBe(false);
-  });
-
-  it("take 2's close right after save drops the attachment (Live run 2)", async () => {
-    const { mail, err } = await run({
-      createScript: take2,
-      attachWriteMs: 1_500,
-    });
+  it("closing the window right after save drops the attachment (take 2, Live run 2)", async () => {
+    const mail = new FakeMail({ attachWriteMs: 1_500 });
+    // Take 2's script closed its own compose window as soon as `save` returned.
+    const closeRightAfterSave: OsaRunner = async (request) => {
+      const outcome = await mail.runner(request);
+      if (request.script === "create-draft" && outcome.kind === "ok") {
+        await mail.runner({
+          script: "discard-outgoing",
+          argv: mail.outgoing.map((o) => o.id),
+        });
+      }
+      return outcome;
+    };
+    const err = await createDraft(
+      input,
+      fakeDeps(mail, files, { run: closeRightAfterSave }),
+    ).then(
+      () => undefined,
+      (e) => e as AxiError,
+    );
     expect(err?.code).toBe("DRAFT_MISMATCH");
     expect(err?.message).toContain("attachments 0 of 1");
     expect(mail.outgoing).toEqual([]);
   });
 
-  it("the current script keeps the attachment, polling until Mail writes it", async () => {
+  it("gives the check after the close its own budget, so a late match still has time to reappear", async () => {
+    // The first read-back matches only at the end of its 3 s budget; then
+    // Mail briefly does not list the draft after the close.
+    const mail = new FakeMail({ attachWriteMs: 3_000 });
+    let hidden: typeof mail.drafts = [];
+    const hideOnceAfterClose: OsaRunner = async (request) => {
+      if (request.script === "list-drafts" && hidden.length > 0) {
+        const outcome = await mail.runner(request);
+        mail.drafts.push(...hidden);
+        hidden = [];
+        return outcome;
+      }
+      const outcome = await mail.runner(request);
+      if (request.script === "discard-outgoing") {
+        hidden = mail.drafts.splice(0);
+      }
+      return outcome;
+    };
+    const r = await createDraft(
+      input,
+      fakeDeps(mail, files, {
+        run: hideOnceAfterClose,
+        verifyTimeoutMs: 3_000,
+      }),
+    );
+    expect(r.draft.attachments).toHaveLength(1);
+  });
+
+  it("reports DRAFT_NOT_SAVED, not an empty DRAFT_MISMATCH, when the verified draft is gone after the close", async () => {
+    const mail = new FakeMail();
+    const goneAfterClose: OsaRunner = async (request) => {
+      const outcome = await mail.runner(request);
+      if (request.script === "discard-outgoing") mail.drafts.length = 0;
+      return outcome;
+    };
+    const err = await createDraft(
+      input,
+      fakeDeps(mail, files, { run: goneAfterClose, verifyTimeoutMs: 3_000 }),
+    ).then(
+      () => undefined,
+      (e) => e as AxiError,
+    );
+    expect(err?.code).toBe("DRAFT_NOT_SAVED");
+    expect(err?.message).toBe(
+      "Draft 9000 was verified before the compose window closed, but Mail did not show it in Drafts within 3s after",
+    );
+  });
+
+  it("keeps the attachment by closing only after the read-back saw it", async () => {
     const mail = new FakeMail({ attachWriteMs: 1_500 });
     const r = await createDraft(input, fakeDeps(mail, files));
     expect(r.draft.attachments).toHaveLength(1);
@@ -175,7 +221,13 @@ describe("attachments survive: the window stays open until the draft is verified
   });
 });
 
-describe("osa/create-draft.applescript follows the confirmed path", () => {
+/**
+ * Policy lint over the shipped osa/create-draft.applescript, not a
+ * behavioural test: AppleScript cannot run offline in CI, so these pin the
+ * declared rules from the live evidence in the file itself. The live smoke
+ * test (test/live.smoke.test.ts) is the behavioural proof.
+ */
+describe("policy lint: osa/create-draft.applescript follows the confirmed path", () => {
   const text = readFileSync(
     join(import.meta.dirname, "..", "osa", "create-draft.applescript"),
     "utf-8",
