@@ -1,6 +1,6 @@
 {
   "name": "@simkimsia/apple-mail-axi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageManager": "pnpm@10.33.0",
   "description": "Agent-first CLI and MCP server for Apple Mail drafts on macOS: create, list, view and delete plain-text drafts with attachments, verified after every save, and never sends mail",
   "type": "module",
