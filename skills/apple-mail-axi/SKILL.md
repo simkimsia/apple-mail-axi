@@ -26,6 +26,10 @@ MCP client config and first-run permissions.
 - `MAIL_NOT_RUNNING`: run `open -a Mail`, wait, rerun.
 - `DRAFT_NOT_SAVED`: run `apple-mail-axi draft list` before creating again,
   or the draft may be duplicated.
+- `COMPOSE_LEFT_OPEN`: a compose window this tool opened is still open in
+  Mail. Ask the user to close it with Don't Save, then check the draft list.
+- Create briefly shows a compose window on screen; warn the user first if
+  they are typing in Mail.
 
 ## Current guidance lives in the CLI
 

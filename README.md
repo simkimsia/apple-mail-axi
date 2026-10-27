@@ -12,8 +12,8 @@ It is built on [`axi-sdk-js`](https://github.com/kunchenguid/axi) and modeled on
 
 ## Status
 
-v1, take 1. It covers drafts only. Reading and searching mail come in v2.
-Offline tests pass, but nothing has run against a real Mail.app yet; see [STATUS.md](STATUS.md).
+v1, take 2. It covers drafts only. Reading and searching mail come in v2.
+Offline tests pass. The create path was probed live on one iCloud account; the full smoke test has not run yet. See [STATUS.md](STATUS.md).
 
 ## Requirements
 
@@ -50,6 +50,14 @@ That app is your terminal for the CLI, or the MCP client (for example Claude) fo
 - If the app is not listed there, run `tccutil reset AppleEvents` and run any command again to get the prompt back.
 
 Drafts need no Full Disk Access.
+
+## A compose window appears during create
+
+`draft create` opens a real Mail compose window, fills it, saves it to Drafts and closes it again without sending.
+The window is on screen for a few seconds, longer with attachments.
+Do not type into it while it is open.
+Mail does not save drafts from hidden compose windows, so there is no invisible mode.
+If a create is interrupted and a compose window titled with your subject stays open, close it and choose Don't Save; the error says so (`COMPOSE_LEFT_OPEN`).
 apple-mail-axi does not launch Mail for you; if Mail is closed, commands fail with `MAIL_NOT_RUNNING` and tell you to run `open -a Mail`.
 
 ## CLI usage
@@ -104,6 +112,7 @@ Errors go to stdout in the same format, with exit code 1 (2 for a bad call):
 | `DRAFT_NOT_FOUND`                                | no draft with that id in Drafts                                              |
 | `DRAFT_NOT_SAVED` / `DRAFT_MISMATCH`             | the read-back did not find the draft, or found it different from the request |
 | `DELETE_NOT_CONFIRMED`                           | Mail took the delete but the draft is still listed                           |
+| `COMPOSE_LEFT_OPEN`                              | a compose window apple-mail-axi opened could not be closed; close it by hand |
 | `MAIL_TIMEOUT`                                   | Mail did not answer in time                                                  |
 | `UNSUPPORTED_PLATFORM`                           | not macOS                                                                    |
 
@@ -111,6 +120,7 @@ Errors go to stdout in the same format, with exit code 1 (2 for a bad call):
 
 `apple-mail-axi mcp` runs a stdio MCP server with the same four operations as tools: `draft_create`, `draft_list`, `draft_view` and `draft_delete`.
 They take the same arguments as the CLI (snake_case: `body_file`) and return the same text and error codes.
+The one difference is wording in `help:` next steps: over MCP they name tools and arguments (``Call the `draft_view` tool with `{id: '48213'}` ``) instead of CLI commands.
 Stdin (`--body-file -`) is the one CLI-only input; pass `body` instead.
 
 Claude Code:
@@ -155,7 +165,7 @@ pnpm run build        # tsc -> dist/
 pnpm run format:check
 ```
 
-The live smoke test creates and deletes one real draft, and runs only when asked:
+The live smoke test creates and deletes one real draft from the iCloud account (override with `APPLE_MAIL_AXI_LIVE_FROM`), checks that no compose window is left open, and runs only when asked:
 
 ```sh
 APPLE_MAIL_AXI_LIVE=1 pnpm vitest run test/live.smoke.test.ts
