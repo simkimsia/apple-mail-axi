@@ -561,8 +561,17 @@ async function discardOurOutgoing(
   if (closable.length > 0) {
     await runScript(deps.run, { script: "discard-outgoing", argv: closable });
   }
-  return ours(await listOutgoing(deps)).length;
+  // A window can take a moment to go after its close; look a few times.
+  let left = ours(await listOutgoing(deps)).length;
+  for (let i = 1; left > 0 && i < DISCARD_CHECKS; i++) {
+    await deps.sleep(deps.verifyIntervalMs);
+    left = ours(await listOutgoing(deps)).length;
+  }
+  return left;
 }
+
+/** How many times the core looks for a leftover compose window after closing. */
+const DISCARD_CHECKS = 3;
 
 export async function createDraft(
   input: CreateDraftInput,
