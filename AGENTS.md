@@ -47,7 +47,7 @@ before any change. It never sends mail.
 
 Split by evidence. CONFIRMED means observed on the user's Mail.app on
 2026-10-27, macOS Darwin 24.6.0, iCloud account only (see STATUS.md "Live
-run 1" and "Live probes"). Everything else is UNVERIFIED: from Apple's
+run 1", "Live probes" and "Live run 2 + probes D-H"). Everything else is UNVERIFIED: from Apple's
 scripting dictionary, public reports or reasoning. Move a point up only
 with a dated observation.
 
@@ -67,11 +67,26 @@ with a dated observation.
   `tell content to make new attachment with properties {file name:POSIX file
 p} at after last paragraph`, `delay 2`, `save`. The draft lands in the
   account's Drafts with the right sender, to and attachment count.
-  `osa/create-draft.applescript` follows this path; cc, bcc, several
-  attachments and the settle poll before the pause are not yet observed.
+  `osa/create-draft.applescript` follows this path up to `save`; cc, bcc,
+  several attachments and the settle poll before the pause are not yet
+  observed.
 - After `save` the visible compose window stays open; `close o saving no`
   closes it and the saved draft survives. A compose window therefore shows
   on screen for a few seconds during every create.
+- Closing the compose window right after `save` drops the attachment from
+  the saved draft (Live run 2: `DRAFT_MISMATCH attachments 0 of 1`, and
+  plain AppleScript `count of mail attachments` also 0). With `delay 3`
+  between `save` and `close saving no` the attachment stayed (probe H).
+  `save` returns before Mail has written the attachment. Ruled out as
+  causes: the temp-dir location of the file, a body without a trailing
+  newline, and `tell content of` vs nested `tell` (probes D, E, G). So the
+  script returns with the window open, and the core closes it only after
+  the read-back matched (or gave up), then reads the draft once more.
+- Outgoing message ids are readable: `osa/list-outgoing.js` and
+  `osa/discard-outgoing.applescript` worked, `outgoing=0` after Live run 2.
+- The sender string `Full Name <address>` (`Kim Sia Sim
+<kimsia.sim@icloud.com>`) is accepted by `set sender` and reads back as
+  the draft's from.
 - The draft id stayed the same for about a minute on iCloud IMAP, with the
   attachment still there.
 - `osa/delete-draft.js` finds the draft through `draftsMailbox()` and Mail
@@ -87,10 +102,13 @@ p} at after last paragraph`, `delay 2`, `save`. The draft lands in the
 - Whether the attachment settle poll (`count of attachments of content`,
   budget `settleMs` in drafts.ts) is needed on top of the fixed 2 s pause,
   and whether 2 s is enough for large or many files.
-- `id` of an outgoing message (`osa/list-outgoing.js`,
-  `osa/discard-outgoing.applescript`): read as Mail's dictionary describes,
-  not yet observed. If it reads as empty, the core cannot close a leftover
-  by id and reports `COMPOSE_LEFT_OPEN`.
+- That the take-3 order (verify with the window open, then close) keeps the
+  attachment without any fixed delay: it follows from probe H, but the
+  take-3 create has not run live. How long Mail takes to write attachments
+  (one small file needed under 3 s) bounds how long the window shows.
+- Whether Mail writes the attachment into the same saved draft id or
+  replaces the draft under a new id; the read-back rescans fresh ids every
+  round, highest first, so either works.
 - The account a draft reports (`m.mailbox().account().name()` from the
   unified `draftsMailbox()`) matching the account name `--from` resolved
   to. The read-back filter accepts an empty account, so a wrong guess here
@@ -136,9 +154,14 @@ Automation switched off, an unknown `--from`.
   and MCP wording on the other.
 - `test/outgoing.test.ts` requires that create leaves no outgoing message of
   its own on success and on every failure path (including osascript being
-  killed mid-script), never touches the user's own compose windows, and
-  that `osa/create-draft.applescript` composes visibly and closes its
-  message on the error path and after save.
+  killed mid-script and the read-back failing), never touches the user's
+  own compose windows, and that `osa/create-draft.applescript` composes
+  visibly, closes its message on the error path, and does NOT close it
+  after a successful save. `test/fake-mail.ts` reads the real script to
+  decide whether it closes after save, and only gives a saved draft its
+  attachments if a later call finds the window still open; the regression
+  test runs take 2's script (`test/fixtures/create-draft.take2.applescript`)
+  and expects `DRAFT_MISMATCH attachments 0 of 1`.
 - Delete looks a draft up only inside `draftsMailbox()`, so any other id is
   `DRAFT_NOT_FOUND`, and the id must be all digits.
 

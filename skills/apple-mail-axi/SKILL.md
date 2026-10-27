@@ -28,8 +28,12 @@ MCP client config and first-run permissions.
   or the draft may be duplicated.
 - `COMPOSE_LEFT_OPEN`: a compose window this tool opened is still open in
   Mail. Ask the user to close it with Don't Save, then check the draft list.
-- Create briefly shows a compose window on screen; warn the user first if
-  they are typing in Mail.
+- `DRAFT_MISMATCH`: a draft was saved but differs (for example attachments
+  `0 of 1`). Its `help:` names the id; view it, delete it, then create again.
+- Create shows a compose window on screen for a few seconds, until the
+  saved draft reads back correctly, then closes it. Warn the user first if
+  they are typing in Mail, and never run two creates with the same subject
+  at once (the subject is how each finds its own draft and window).
 
 ## Current guidance lives in the CLI
 

@@ -1,18 +1,18 @@
 # Status
 
-As of 2026-10-27, on branch `v1-take2` (from `v1-take1`, not pushed).
+As of 2026-10-27, on branch `v1-take3` (from `v1-take2`, not pushed).
 
 ## Where it stands
 
-v1 take 2 of a 3-take budget is built and tested offline.
-Create now follows the path the live probes confirmed (visible compose, save, close saving no) and checks that no compose window of its own is left, on success and failure.
-Next steps are worded per way in (CLI commands vs MCP tool names) from one core step list.
-`pnpm test`, `pnpm run build` and `pnpm run format:check` pass.
-The take-2 create script has not run against a real Mail.app yet.
+v1 take 3 of a 3-take budget (converge and ship) is built and tested offline.
+Create no longer closes the compose window right after `save`: the script saves and returns with the window open, the core polls the saved draft until recipients, subject, sender and attachment count match, then closes our window with `discard-outgoing` and reads the draft once more.
+The fake Mail follows the real script's close order and only writes attachments into a saved draft while its window is still open; a regression test runs take 2's script and gets `DRAFT_MISMATCH attachments 0 of 1`.
+`pnpm test`, `pnpm run build`, `pnpm run format:check` pass, and `pnpm pack` lists only `dist/`, `osa/`, the skill, LICENSE, README and package.json.
+The take-3 create has not run against a real Mail.app yet.
 
 ## Not done on purpose
 
-- No live run of take 2. The main session runs the smoke test with the user (`APPLE_MAIL_AXI_LIVE=1`, iCloud by default, see AGENTS.md "Live smoke procedure").
+- No live run of take 3. The main session runs the smoke test with the user (`APPLE_MAIL_AXI_LIVE=1`, iCloud by default, see AGENTS.md "Live smoke procedure").
 - Not pushed, no PR, not published to npm.
 - `bench/` is laid out from the axi-bench template, but Mail needs a macOS host runner, and the fixture scripts are not written.
 - No reading or search (v2), no reply or forward drafts.
@@ -59,3 +59,10 @@ Listed under "UNVERIFIED" in AGENTS.md "Mail.app notes": outgoing message `id` (
 - Cause: the compose window is closed right after `save`. Adding `delay 3` between `save` and `close saving no` (H) gave attachments=1. `save` returns before Mail has written the attachment into the saved draft, and closing the window first discards it.
 - Take 3 fix: after `save`, poll the saved draft in Drafts (new id, exact subject) until its attachment count matches, with a budget, and only then close the compose window. Avoid a fixed delay. If the budget runs out, close and raise `DRAFT_MISMATCH` as now.
 - zsh note for manual probes: unquoted `$VAR` does not word-split; use `${=VAR}`.
+
+## Take note (take 3, converge and ship)
+
+- Learned: The last live failure was not about finding or matching the draft but about when Mail finishes it: `save` returns before the attachment is written, so "close on every path" had been placed one step too early. The read-back the core already did is the right wait signal, as long as the window stays open while it runs. A fake that only acts out what the script is assumed to do could not catch this; one that reads the real script's close order and models Mail's late write does.
+- Change: The script returns after `save` with the window open (it still closes it on its own error path). The core verifies first, closes our window by outgoing id (new since preflight, exact subject) on every path, then reads the draft once more after the close. No fixed post-save delay; the existing 30 s read-back budget bounds how long the window shows.
+- Keep: everything take 2 kept, plus the take-2 script as a test fixture (`test/fixtures/create-draft.take2.applescript`) so the close-too-early order stays a failing case.
+- No take 4. If the live smoke still loses the attachment with the window held open until the read-back matches, the gap is upstream in what we know about Mail, not in this code: either the read-back reports attachments before they are durably written (count from the unsaved copy), or Mail rewrites the draft on close. Probe that live (read the draft after close and again a minute later) before changing code.

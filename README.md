@@ -53,8 +53,10 @@ Drafts need no Full Disk Access.
 
 ## A compose window appears during create
 
-`draft create` opens a real Mail compose window, fills it, saves it to Drafts and closes it again without sending.
-The window is on screen for a few seconds, longer with attachments.
+`draft create` opens a real Mail compose window, fills it and saves it to Drafts.
+The window stays open while apple-mail-axi reads the saved draft back, because Mail writes attachments into the saved draft only after the save returns, and closing the window too early drops them.
+Once the draft matches the request (or the read-back gives up), the window is closed without saving again and without sending, and the draft is checked once more.
+The window is on screen for a few seconds, longer with attachments, and never longer than the 30-second read-back budget.
 Do not type into it while it is open.
 Mail does not save drafts from hidden compose windows, so there is no invisible mode.
 If a create is interrupted and a compose window titled with your subject stays open, close it and choose Don't Save; the error says so (`COMPOSE_LEFT_OPEN`).
