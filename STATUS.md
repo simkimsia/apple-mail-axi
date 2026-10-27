@@ -1,24 +1,25 @@
 # Status
 
-As of 2026-10-27, on branch `v1-take1` (not pushed).
+As of 2026-10-27, on branch `v1-take2` (from `v1-take1`, not pushed).
 
 ## Where it stands
 
-v1 take 1 of a 3-take budget is built and tested offline.
-`draft create`, `draft list`, `draft view` and `draft delete` work through the CLI and through `apple-mail-axi mcp`, over one core (`src/core/`).
+v1 take 2 of a 3-take budget is built and tested offline.
+Create now follows the path the live probes confirmed (visible compose, save, close saving no) and checks that no compose window of its own is left, on success and failure.
+Next steps are worded per way in (CLI commands vs MCP tool names) from one core step list.
 `pnpm test`, `pnpm run build` and `pnpm run format:check` pass.
-Nothing has run against a real Mail.app yet.
+The take-2 create script has not run against a real Mail.app yet.
 
 ## Not done on purpose
 
-- No live run. The user approves the first one (`APPLE_MAIL_AXI_LIVE=1`, see AGENTS.md "Live smoke procedure").
+- No live run of take 2. The main session runs the smoke test with the user (`APPLE_MAIL_AXI_LIVE=1`, iCloud by default, see AGENTS.md "Live smoke procedure").
 - Not pushed, no PR, not published to npm.
 - `bench/` is laid out from the axi-bench template, but Mail needs a macOS host runner, and the fixture scripts are not written.
 - No reading or search (v2), no reply or forward drafts.
 
-## Open questions for the live run
+## Open questions for the take-2 live run
 
-Listed in AGENTS.md "Mail.app notes": draft id stability on IMAP sync, attachment timing and `visible:false`, the unified Drafts mailbox, `set sender` matching, what delete does, whether the compose object must be closed, and the real osascript stderr for each error.
+Listed under "UNVERIFIED" in AGENTS.md "Mail.app notes": outgoing message `id` (the leftover check depends on it), the account name a draft reports, cc/bcc and several attachments on the visible path, the settle timings, focus stealing, other account types, and the verbatim stderr for each error.
 
 ## Take note (take 1 → take 2)
 
@@ -42,3 +43,9 @@ Listed in AGENTS.md "Mail.app notes": draft id stability on IMAP sync, attachmen
 - `osa/delete-draft.js <id>` worked unchanged: it found the draft through `draftsMailbox()` and moved it to iCloud "Deleted Messages". Confirmed.
 - `left` is a reserved word in AppleScript (-10003); avoid it as a variable name.
 - Probes B (`close saving yes`) and C (.eml handoff) were skipped because A covers the path.
+
+## Take note (take 2 → take 3)
+
+- Learned: The evidence moved the risk from "how do we find the draft" to "what do we leave behind in Mail": a hidden compose cannot be saved or closed, so the one safe path is visible, save, close saving no, and the cleanup has to live in two places (the script's own error handler, and a core check by outgoing id for paths the script never reaches, like osascript being killed). Writing next steps as `call()`/`param()` parts made per-way-in wording cheap and kept codes and step counts identical. What stays assumed is everything the probes did not touch: outgoing message `id`, the account name on a unified-Drafts message, cc/bcc and several attachments on the visible path, and every verbatim stderr.
+- Change: Make take 3 the convergence take, driven by the take-2 live smoke run. Capture verbatim stderr (Mail closed, Automation off, unknown sender) and the real `list-outgoing` output into fixtures; if outgoing ids read empty, switch the leftover check to a key Mail does give (subject plus count, or the window); tune `settleMs`/`SAVE_PAUSE_MS` from measured create times; if `account` reads empty on drafts, scope the read-back with a per-account Drafts lookup in the script instead of filtering in the core. Then ship.
+- Keep: `src/core/operations.ts` as the single registry, `src/core/steps.ts` per-way-in rendering, the `OsaRunner` seam and `test/fake-mail.ts` with its outgoing model, fixed scripts in `osa/` that take values only through argv, the visible-compose create script with its close on every path, the core outgoing check that never touches the user's own windows, the no-send guard, the VISION error-table test, the parity scenarios, and the iCloud-default live smoke test with its no-leftover assertion.
