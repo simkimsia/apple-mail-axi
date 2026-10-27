@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCreateArgv,
+  SAVE_PAUSE_MS,
   settleMs,
   type NormalizedCreate,
 } from "../src/core/drafts.js";
@@ -22,6 +23,7 @@ describe("buildCreateArgv", () => {
       base.body,
       "Kim <kim@work.example>",
       String(settleMs(1)),
+      String(SAVE_PAUSE_MS),
       "2",
       "a@x.example",
       "b@x.example",

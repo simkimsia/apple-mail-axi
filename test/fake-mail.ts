@@ -3,10 +3,22 @@
  * the bundled scripts by name, records every request, and can be told to
  * misbehave (late attachments, dropped recipients, permission errors).
  * Nothing here spawns osascript.
+ *
+ * It also models Mail's open outgoing messages (compose windows), following
+ * what live run 1 and the probes showed: create-draft opens a visible one,
+ * closes it after save and on its own error paths, and leaves it open only
+ * when osascript dies mid-script or the close itself fails.
  */
 import type { CoreDeps, DraftDetail, FileSystem } from "../src/core/drafts.js";
 import { defaultDeps } from "../src/core/drafts.js";
 import type { OsaOutcome, OsaRequest, OsaRunner } from "../src/core/runner.js";
+import type { AxiError } from "../src/core/errors.js";
+import { renderSteps, type Transport } from "../src/core/steps.js";
+
+/** An error's next steps as one way in prints them. */
+export function helpOf(err: AxiError, t: Transport = "cli"): string[] {
+  return renderSteps(err.steps, t);
+}
 
 export interface FakeAccount {
   name: string;
@@ -30,6 +42,23 @@ export interface FakeMailOptions {
   deleteNoop?: boolean;
   /** Fail every script with this outcome. */
   fail?: OsaOutcome;
+  /** Saved drafts land in this account instead of the sender's account. */
+  saveToAccount?: string;
+  /** Mail refuses the attachment at this index (the script's error path). */
+  rejectAttachment?: number;
+  /** osascript is killed mid-script: no save, compose window left open. */
+  killCreate?: boolean;
+  /** The script's close after save fails, leaving the window open. */
+  closeFails?: boolean;
+  /** Outgoing messages cannot be closed at all (the hidden-compose bug). */
+  stuckOutgoing?: boolean;
+  /** Compose windows the user already has open. */
+  outgoing?: FakeOutgoing[];
+}
+
+export interface FakeOutgoing {
+  id: string;
+  subject: string;
 }
 
 export const DEFAULT_ACCOUNTS: FakeAccount[] = [
@@ -71,11 +100,20 @@ export function draft(
 export class FakeMail {
   readonly requests: OsaRequest[] = [];
   readonly drafts: DraftDetail[];
+  readonly outgoing: FakeOutgoing[];
   private nextId = 9000;
+  private nextOutgoingId = 500;
   private views = 0;
 
   constructor(private readonly opts: FakeMailOptions = {}) {
     this.drafts = [...(opts.drafts ?? [])];
+    this.outgoing = [...(opts.outgoing ?? [])];
+  }
+
+  private close(id: string): void {
+    if (this.opts.stuckOutgoing) return;
+    const i = this.outgoing.findIndex((o) => o.id === id);
+    if (i !== -1) this.outgoing.splice(i, 1);
   }
 
   /** Requests for one script, in order. */
@@ -134,17 +172,40 @@ export class FakeMail {
         return ok({ id: d.id, subject: d.subject, account: d.account });
       }
       case "create-draft": {
+        const compose = {
+          id: String(this.nextOutgoingId++),
+          subject: request.argv[0],
+        };
+        this.outgoing.push(compose);
+        if (this.opts.killCreate) return { kind: "timeout" };
+        const files = this.createLists(request.argv).files;
+        const bad = this.opts.rejectAttachment;
+        if (bad !== undefined && bad < files.length) {
+          // The script's on-error handler closes the window, then rethrows.
+          this.close(compose.id);
+          return {
+            kind: "exit",
+            exitCode: 1,
+            stderr: `/x/osa/create-draft.applescript: execution error: AMA_ERR:ATTACHMENT_REJECTED:${files[bad]} (9003)\n`,
+          };
+        }
         if (!this.opts.saveNothing)
           this.drafts.push(this.fromCreateArgv(request.argv));
+        if (!this.opts.closeFails) this.close(compose.id);
         return { kind: "ok", stdout: "saved\n" };
+      }
+      case "list-outgoing":
+        return ok({ outgoing: this.outgoing });
+      case "discard-outgoing": {
+        for (const id of request.argv) this.close(id);
+        return { kind: "ok", stdout: "done\n" };
       }
     }
   };
 
-  /** Decode the argv layout documented in osa/create-draft.applescript. */
-  private fromCreateArgv(argv: string[]): DraftDetail {
-    const [subject, body, sender] = argv;
-    let i = 4;
+  /** Decode the counted lists of the create argv (from index 5). */
+  private createLists(argv: string[]) {
+    let i = 5;
     const take = () => {
       const n = Number(argv[i]);
       const out = argv.slice(i + 1, i + 1 + n);
@@ -155,6 +216,25 @@ export class FakeMail {
     const cc = take();
     const bcc = take();
     const files = take();
+    return { to, cc, bcc, files };
+  }
+
+  /** The account a sender string belongs to, like Mail would pick. */
+  private accountFor(sender: string): string {
+    const accounts = this.opts.accounts ?? DEFAULT_ACCOUNTS;
+    const lower = sender.toLowerCase();
+    const hit = accounts.find((a) =>
+      a.addresses.some((addr) => lower.includes(addr.toLowerCase())),
+    );
+    return hit?.name ?? accounts[0].name;
+  }
+
+  /** Decode the argv layout documented in osa/create-draft.applescript. */
+  private fromCreateArgv(argv: string[]): DraftDetail {
+    const [subject, body, sender] = argv;
+    const { to, cc, bcc, files } = this.createLists(argv);
+    const account = this.opts.saveToAccount ?? this.accountFor(sender);
+    const fallbackFrom = "Kim Sia <kim@work.example>";
     const kept = files.slice(
       0,
       Math.max(0, files.length - (this.opts.dropAttachments ?? 0)),
@@ -162,7 +242,8 @@ export class FakeMail {
     return draft(String(this.nextId++), {
       subject,
       body,
-      from: sender,
+      from: sender || fallbackFrom,
+      account,
       to,
       cc,
       bcc: this.opts.dropBcc ? [] : bcc,

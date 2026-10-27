@@ -59,7 +59,12 @@ export function buildMcpServer(deps: CoreDeps = defaultDeps()): McpServer {
         },
       },
       async (args: Record<string, unknown>) => {
-        const result = await invoke(op.name, toCoreInput(op, args), deps);
+        const result = await invoke(
+          op.name,
+          toCoreInput(op, args),
+          "mcp",
+          deps,
+        );
         return {
           content: [{ type: "text" as const, text: result.text }],
           ...(result.isError ? { isError: true } : {}),

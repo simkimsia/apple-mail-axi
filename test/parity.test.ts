@@ -2,7 +2,13 @@
  * VISION.md Interface: every capability is reachable through the CLI and the
  * MCP server with the same arguments, safety rules and errors. This drives
  * both ways in against the same fake Mail and compares what comes out.
+ *
+ * Output, error message, error code and the number of next steps must match
+ * exactly. Only the wording of next steps differs: the CLI names CLI
+ * commands and flags, MCP names tools and argument names. Both come from
+ * the one core step list (src/core/steps.ts).
  */
+import { decode } from "@toon-format/toon";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +17,52 @@ import { cliFlags } from "../src/cli/parse.js";
 import { OPERATIONS } from "../src/core/operations.js";
 import { buildMcpServer } from "../src/mcp/server.js";
 import { draft, FakeMail, fakeDeps, fakeFs } from "./fake-mail.js";
+
+interface Split {
+  body: unknown;
+  help: string[];
+}
+
+/** Separate an output into its data (body) and its next steps (help). */
+function split(text: string): Split {
+  if (text.startsWith("error:")) {
+    const { help, ...body } = decode(text.trim()) as {
+      help?: string[];
+    } & Record<string, unknown>;
+    return { body, help: help ?? [] };
+  }
+  const lines = text.trimEnd().split("\n");
+  const at = lines.findIndex((l) => /^help\[\d+\]:$/.test(l));
+  if (at === -1) return { body: lines.join("\n"), help: [] };
+  return {
+    body: lines.slice(0, at).join("\n"),
+    help: lines.slice(at + 1).map((l) => l.trim()),
+  };
+}
+
+const PARAM_NAMES = new Set(
+  OPERATIONS.flatMap((o) => o.params.flatMap((p) => [p.cli, p.mcp])),
+);
+
+/** A help line with its transport-specific spans replaced by placeholders. */
+function neutral(line: string): string {
+  return line
+    .replace(/Run `apple-mail-axi [^`]*`/g, "<call>")
+    .replace(/Call the `[a-z_]+` tool(?: with `[^`]*`)?/g, "<call>")
+    .replace(/`([^`]*)`/g, (m, name: string) =>
+      PARAM_NAMES.has(name) ? "<param>" : m,
+    );
+}
+
+/** The CLI never names tools; MCP never names commands or flags. */
+function expectWording(cliHelp: string[], mcpHelp: string[]): void {
+  for (const l of cliHelp) {
+    expect(l).not.toMatch(/`draft_(create|list|view|delete)`/);
+  }
+  for (const l of mcpHelp) {
+    expect(l).not.toMatch(/apple-mail-axi |`--[a-z]/);
+  }
+}
 
 const FILES = fakeFs(
   { "/work/a.pdf": "file" },
@@ -260,7 +312,13 @@ describe("CLI and MCP give the same result for the same input", () => {
       const cli = await viaCli(cliMail, s.cli);
       const mcp = await viaMcp(mcpMail, s.tool, s.args);
       expect(cli.text).toContain(s.expect);
-      expect(mcp.text.trimEnd()).toBe(cli.text.trimEnd());
+      expect(mcp.text).toContain(s.expect);
+      const c = split(cli.text);
+      const m = split(mcp.text);
+      expect(m.body).toEqual(c.body);
+      expect(m.help).toHaveLength(c.help.length);
+      expect(m.help.map(neutral)).toEqual(c.help.map(neutral));
+      expectWording(c.help, m.help);
       expect(mcp.isError).toBe(cli.exitCode !== 0);
       // The same core calls reached Mail, with the same argv.
       expect(mcpMail.requests).toEqual(cliMail.requests);
@@ -292,5 +350,40 @@ describe("CLI and MCP give the same result for the same input", () => {
     expect(r.exitCode).toBe(2);
     expect(r.text).toContain("unknown flag --sned");
     expect(mail.requests).toEqual([]);
+  });
+});
+
+describe("next steps are worded for the way in", () => {
+  it("DRAFT_MISMATCH names CLI commands on the CLI and tools under MCP, same code", async () => {
+    const mail = () => new FakeMail({ dropAttachments: 1 });
+    const cli = await viaCli(mail(), [
+      "draft",
+      "create",
+      "--subject",
+      "s",
+      "--attach",
+      "a.pdf",
+    ]);
+    const mcp = await viaMcp(mail(), "draft_create", {
+      subject: "s",
+      attach: ["a.pdf"],
+    });
+    expect(cli.text).toContain("Run `apple-mail-axi draft view 9000`");
+    expect(cli.text).toContain("Run `apple-mail-axi draft delete 9000`");
+    expect(mcp.text).toContain(
+      "Call the `draft_view` tool with `{id: '9000'}`",
+    );
+    expect(mcp.text).toContain(
+      "Call the `draft_delete` tool with `{id: '9000'}`",
+    );
+    expect(split(mcp.text).body).toEqual(split(cli.text).body);
+  });
+
+  it("validation help names --flags on the CLI and argument names under MCP", async () => {
+    const cli = await viaCli(new FakeMail(), ["draft", "create"]);
+    const mcp = await viaMcp(new FakeMail(), "draft_create", {});
+    expect(cli.text).toContain("`--subject`");
+    expect(mcp.text).toContain("`subject`");
+    expect(mcp.text).not.toContain("--subject");
   });
 });

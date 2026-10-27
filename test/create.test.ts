@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { AxiError } from "../src/core/errors.js";
-import { createDraft, type CreateDraftInput } from "../src/core/drafts.js";
-import { draft, FakeMail, fakeDeps, fakeFs } from "./fake-mail.js";
+import {
+  compareDraft,
+  createDraft,
+  type CreateDraftInput,
+} from "../src/core/drafts.js";
+import { draft, FakeMail, fakeDeps, fakeFs, helpOf } from "./fake-mail.js";
 
 const files = fakeFs({ "/work/a.pdf": "file", "/work/b.png": "file" });
 
@@ -31,7 +35,9 @@ describe("createDraft verification", () => {
     expect(r.draft.attachments).toHaveLength(2);
     expect(mail.requests.map((q) => q.script)).toEqual([
       "preflight",
+      "list-outgoing",
       "create-draft",
+      "list-outgoing",
       "list-drafts",
       "view-draft",
     ]);
@@ -60,7 +66,7 @@ describe("createDraft verification", () => {
     expect(err).toBeInstanceOf(AxiError);
     expect(err.code).toBe("DRAFT_MISMATCH");
     expect(err.message).toContain("attachments 1 of 2");
-    expect(err.suggestions.join(" ")).toContain("draft delete 9000");
+    expect(helpOf(err).join(" ")).toContain("draft delete 9000");
   });
 
   it("fails with DRAFT_MISMATCH when a recipient field differs", async () => {
@@ -191,8 +197,8 @@ describe("sender resolution", () => {
       fakeDeps(mail),
     ).catch((e) => e as AxiError);
     expect(err.code).toBe("UNKNOWN_SENDER");
-    expect(err.suggestions[0]).toContain("Work: kim@work.example");
-    expect(err.suggestions[0]).not.toContain("old@old.example");
+    expect(helpOf(err)[0]).toContain("Work: kim@work.example");
+    expect(helpOf(err)[0]).not.toContain("old@old.example");
     expect(mail.calls("create-draft")).toEqual([]);
   });
 
@@ -203,5 +209,51 @@ describe("sender resolution", () => {
         createDraft({ subject: "s", from: "old@old.example" }, fakeDeps(mail)),
       ),
     ).toBe("UNKNOWN_SENDER");
+  });
+});
+
+describe("read-back is scoped to the sender account", () => {
+  it("finds the draft in the sender account's Drafts", async () => {
+    const mail = new FakeMail();
+    const r = await createDraft({ subject: "s", from: "Home" }, fakeDeps(mail));
+    expect(r.draft.account).toBe("Home");
+  });
+
+  it("ignores a same-subject draft that landed in another account", async () => {
+    const mail = new FakeMail({ saveToAccount: "Home" });
+    const err = await createDraft(
+      { subject: "s", from: "Work" },
+      fakeDeps(mail),
+    ).catch((e) => e as AxiError);
+    expect(err.code).toBe("DRAFT_NOT_SAVED");
+    expect(err.message).toContain("the Work Drafts");
+  });
+
+  it("without a sender, any account's Drafts counts", async () => {
+    const mail = new FakeMail({ saveToAccount: "Home" });
+    const r = await createDraft({ subject: "s" }, fakeDeps(mail));
+    expect(r.draft.account).toBe("Home");
+  });
+
+  it("checks the saved sender address when one was asked for", () => {
+    const wanted = {
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: "s",
+      body: "",
+      attach: [],
+    };
+    const saved = draft("1", { subject: "s", to: [], from: "x@other.example" });
+    expect(compareDraft(wanted, saved, "kim@work.example")).toEqual([
+      'from is "x@other.example", wanted "kim@work.example"',
+    ]);
+    expect(
+      compareDraft(
+        wanted,
+        { ...saved, from: "Kim Sia <KIM@work.example>" },
+        "kim@work.example",
+      ),
+    ).toEqual([]);
   });
 });

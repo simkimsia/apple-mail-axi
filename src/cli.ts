@@ -9,7 +9,16 @@ import { defaultDeps, listDrafts, type CoreDeps } from "./core/drafts.js";
 import { OPERATIONS } from "./core/operations.js";
 import { DRAFT_HELP, MCP_HELP, TOP_HELP } from "./cli/help.js";
 import { parseCli } from "./cli/parse.js";
-import { draftRows, RENDERERS, renderError } from "./render.js";
+import { renderSteps } from "./core/steps.js";
+import {
+  CREATE_ONE,
+  draftRows,
+  help,
+  RENDERERS,
+  renderError,
+  type CodedError,
+} from "./render.js";
+import { call } from "./core/errors.js";
 import { toAxiError } from "./invoke.js";
 import { encode, renderHelp, renderList, renderOutput } from "./toon.js";
 import { VERSION } from "./version.js";
@@ -47,20 +56,21 @@ export async function homeView(deps: CoreDeps): Promise<string> {
     if (r.total === 0) {
       return renderOutput([
         "drafts: 0 drafts in Mail's Drafts mailbox",
-        renderHelp([
-          'Run `apple-mail-axi draft create --to <address> --subject "<subject>" --body "<text>"` to save one',
-        ]),
+        help([CREATE_ONE], "cli"),
       ]);
     }
     return renderOutput([
       `count: ${r.drafts.length} of ${r.total} drafts (newest first)`,
       renderList("drafts", draftRows(r.drafts)),
-      renderHelp([
-        "Run `apple-mail-axi draft view <id>` for one draft",
-        ...(r.total > r.drafts.length
-          ? ["Run `apple-mail-axi draft list` for more drafts"]
-          : []),
-      ]),
+      help(
+        [
+          [call("draft_view", { id: "<id>" }), " for one draft"],
+          ...(r.total > r.drafts.length
+            ? [[call("draft_list"), " for more drafts"]]
+            : []),
+        ],
+        "cli",
+      ),
     ]);
   } catch (error) {
     if (error instanceof AxiError && DEGRADE.includes(error.code)) {
@@ -72,7 +82,7 @@ export async function homeView(deps: CoreDeps): Promise<string> {
             error: error.message,
           },
         }),
-        renderHelp(error.suggestions),
+        renderHelp(renderSteps(error.steps, "cli")),
       ]);
     }
     throw error;
@@ -129,7 +139,7 @@ export async function main(options: MainOptions = {}): Promise<void> {
           input.body = await readStdin();
         }
         const result = await op.run(input, deps);
-        return RENDERERS[op.name](result as never);
+        return RENDERERS[op.name](result as never, "cli");
       },
       mcp: (args) => {
         throw validationError(
@@ -147,11 +157,14 @@ export async function main(options: MainOptions = {}): Promise<void> {
     // The SDK's default formatter only knows its own AxiError class; route
     // ours (and foreign throws) through the shared renderer (gh-axi pattern).
     formatError: (error) => {
-      const axi =
+      const axi: CodedError =
         error instanceof SdkAxiError
-          ? (error as unknown as AxiError)
+          ? (error as unknown as CodedError)
           : toAxiError(error);
-      return { output: renderError(axi), exitCode: exitCodeForError(axi) };
+      return {
+        output: renderError(axi, "cli"),
+        exitCode: exitCodeForError(axi),
+      };
     },
   });
 }

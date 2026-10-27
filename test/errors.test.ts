@@ -3,34 +3,77 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { mapOsascriptError } from "../src/core/errors.js";
 import { listDrafts, createDraft } from "../src/core/drafts.js";
-import { FakeMail, fakeDeps } from "./fake-mail.js";
+import { FakeMail, fakeDeps, helpOf } from "./fake-mail.js";
 
-// Fixture shapes follow osascript's "<path>: execution error: <msg> (<n>)"
-// format. They are NOT yet verbatim captures from a live run; replace them
-// with real stderr during the first approved live run (see AGENTS.md).
-const STDERR = {
-  automation:
-    "/pkg/osa/preflight.js: execution error: Error: Not authorized to send Apple events to Mail. (-1743)\n",
-  notRunningMarker:
-    "/pkg/osa/preflight.js: execution error: Error: AMA_ERR:MAIL_NOT_RUNNING (-2700)\n",
-  notRunningAppleScript:
-    "/pkg/osa/create-draft.applescript: execution error: AMA_ERR:MAIL_NOT_RUNNING (9001)\n",
-  notSetUp:
-    "/pkg/osa/preflight.js: execution error: Error: AMA_ERR:MAIL_NOT_SET_UP (-2700)\n",
-  procNotFound:
-    "/pkg/osa/view-draft.js: execution error: Error: Application isn't running. (-600)\n",
-  timeout:
-    "/pkg/osa/list-drafts.js: execution error: Error: AppleEvent timed out. (-1712)\n",
-  rejected:
-    "/pkg/osa/create-draft.applescript: execution error: AMA_ERR:ATTACHMENT_REJECTED:/x/a.pdf (9003)\n",
-  draftMissing:
-    "/pkg/osa/view-draft.js: execution error: Error: AMA_ERR:DRAFT_NOT_FOUND:42 (-2700)\n",
-  other:
-    "/pkg/osa/view-draft.js: execution error: Error: Something odd happened (-10000)\n",
+/**
+ * osascript stderr fixtures, labelled by where they come from.
+ *
+ * - CONFIRMED_PATH: live run 1 (2026-10-27, macOS Darwin 24.6.0) took this
+ *   path end to end: with Mail closed, the script threw our marker and the
+ *   CLI printed MAIL_NOT_RUNNING with the VISION fix. The stderr text itself
+ *   was not recorded verbatim, so the line below is still shaped by hand.
+ * - GUESSED: shaped after osascript's "<path>: execution error: <msg> (<n>)"
+ *   format and Apple's documented error numbers, never observed here. The
+ *   Automation denial in particular was not seen: the prompt appeared on the
+ *   first real call and was granted.
+ *
+ * Replace any line with a verbatim capture when a live run produces one, and
+ * change its label to VERBATIM with the date.
+ */
+type Source = "CONFIRMED_PATH" | "GUESSED";
+const FIXTURES: Record<string, { source: Source; stderr: string }> = {
+  automation: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/preflight.js: execution error: Error: Not authorized to send Apple events to Mail. (-1743)\n",
+  },
+  notRunningMarker: {
+    source: "CONFIRMED_PATH",
+    stderr:
+      "/pkg/osa/preflight.js: execution error: Error: AMA_ERR:MAIL_NOT_RUNNING (-2700)\n",
+  },
+  notRunningAppleScript: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/create-draft.applescript: execution error: AMA_ERR:MAIL_NOT_RUNNING (9001)\n",
+  },
+  notSetUp: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/preflight.js: execution error: Error: AMA_ERR:MAIL_NOT_SET_UP (-2700)\n",
+  },
+  procNotFound: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/view-draft.js: execution error: Error: Application isn't running. (-600)\n",
+  },
+  timeout: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/list-drafts.js: execution error: Error: AppleEvent timed out. (-1712)\n",
+  },
+  rejected: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/create-draft.applescript: execution error: AMA_ERR:ATTACHMENT_REJECTED:/x/a.pdf (9003)\n",
+  },
+  draftMissing: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/view-draft.js: execution error: Error: AMA_ERR:DRAFT_NOT_FOUND:42 (-2700)\n",
+  },
+  other: {
+    source: "GUESSED",
+    stderr:
+      "/pkg/osa/view-draft.js: execution error: Error: Something odd happened (-10000)\n",
+  },
 };
+const STDERR = Object.fromEntries(
+  Object.entries(FIXTURES).map(([k, v]) => [k, v.stderr]),
+) as Record<keyof typeof FIXTURES, string>;
 
 describe("mapOsascriptError", () => {
-  const cases: [keyof typeof STDERR, string, RegExp][] = [
+  const cases: [string, string, RegExp][] = [
     ["automation", "AUTOMATION_DENIED", /Privacy & Security → Automation/],
     ["notRunningMarker", "MAIL_NOT_RUNNING", /open -a Mail/],
     ["notRunningAppleScript", "MAIL_NOT_RUNNING", /open -a Mail/],
@@ -42,10 +85,10 @@ describe("mapOsascriptError", () => {
     ["other", "UNKNOWN", /AXI_DEBUG=1/],
   ];
   for (const [fixture, code, help] of cases) {
-    it(`${fixture} -> ${code} with a next step`, () => {
+    it(`${fixture} (${FIXTURES[fixture].source}) -> ${code} with a next step`, () => {
       const err = mapOsascriptError(STDERR[fixture]);
       expect(err.code).toBe(code);
-      expect(err.suggestions.join("\n")).toMatch(help);
+      expect(helpOf(err).join("\n")).toMatch(help);
     });
   }
 
@@ -112,11 +155,17 @@ describe("VISION.md error table", () => {
 
   it("Automation error prints the VISION fix verbatim", () => {
     const err = mapOsascriptError(STDERR.automation);
-    expect(err.suggestions).toContain(fixFor("Missing Automation permission"));
+    for (const t of ["cli", "mcp"] as const) {
+      expect(helpOf(err, t)).toContain(fixFor("Missing Automation permission"));
+    }
   });
 
   it("Mail-not-running error prints the VISION fix", () => {
     const err = mapOsascriptError(STDERR.notRunningMarker);
-    expect(err.suggestions.join(" ")).toContain(fixFor("Mail.app not running"));
+    for (const t of ["cli", "mcp"] as const) {
+      expect(helpOf(err, t).join(" ")).toContain(
+        fixFor("Mail.app not running"),
+      );
+    }
   });
 });

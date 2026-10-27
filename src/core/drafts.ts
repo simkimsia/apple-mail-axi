@@ -5,7 +5,14 @@
 import { constants as fsConstants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { AxiError, validationError } from "./errors.js";
+import {
+  AxiError,
+  call,
+  composeLeftOpenError,
+  composeLeftOpenSteps,
+  param,
+  validationError,
+} from "./errors.js";
 import { defaultRunner, runJson, runScript, type OsaRunner } from "./runner.js";
 
 // ---------------------------------------------------------------------------
@@ -157,14 +164,21 @@ export const MAX_LIST_LIMIT = 500;
 
 const ADDRESS = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 
-function addresses(field: string, values: string[] | undefined): string[] {
+function addresses(
+  field: "to" | "cc" | "bcc",
+  values: string[] | undefined,
+): string[] {
   const list = (values ?? []).map((v) => v.trim());
   for (const v of list) {
     if (!ADDRESS.test(v)) {
       throw validationError(
-        `${field} ${JSON.stringify(v)} is not a plain email address`,
+        `${field} address ${JSON.stringify(v)} is not a plain email address`,
         [
-          `Pass one bare address per ${field}, e.g. \`${field} name@example.com\`; repeat ${field} for more`,
+          [
+            "Pass bare addresses only in ",
+            param(field),
+            ", one per entry, e.g. name@example.com",
+          ],
         ],
       );
     }
@@ -176,13 +190,13 @@ function addresses(field: string, values: string[] | undefined): string[] {
 export function requireDraftId(id: string | undefined): string {
   if (id === undefined || id.trim() === "") {
     throw validationError("draft id is required", [
-      "Run `apple-mail-axi draft list` to see draft ids",
+      [call("draft_list"), " to see draft ids"],
     ]);
   }
   if (!/^\d+$/.test(id)) {
     throw validationError(
-      `draft id must be the full numeric id from \`draft list\`, got ${JSON.stringify(id)}`,
-      ["Run `apple-mail-axi draft list` and copy the id exactly"],
+      `draft id must be the full numeric id from the draft list, got ${JSON.stringify(id)}`,
+      [[call("draft_list"), " and copy the id exactly"]],
     );
   }
   return id;
@@ -194,7 +208,13 @@ function listLimit(raw: number | string | undefined): number {
   if (!/^\d+$/.test(text) || Number(text) < 1) {
     throw validationError(
       `limit must be a whole number of at least 1, got ${text}`,
-      [`Pass e.g. \`--limit ${DEFAULT_LIST_LIMIT}\``],
+      [
+        [
+          "Pass ",
+          param("limit"),
+          ` as a whole number, e.g. ${DEFAULT_LIST_LIMIT}`,
+        ],
+      ],
     );
   }
   return Math.min(Number(text), MAX_LIST_LIMIT);
@@ -218,7 +238,11 @@ export async function normalizeCreate(
   const subject = (input.subject ?? "").trim();
   if (subject === "") {
     throw validationError("subject is required", [
-      'Pass `--subject "..."`; the subject is how the saved draft is found and verified',
+      [
+        "Pass ",
+        param("subject"),
+        "; the subject is how the saved draft is found and verified",
+      ],
     ]);
   }
   if (/[\r\n]/.test(subject)) {
@@ -228,7 +252,13 @@ export async function normalizeCreate(
   }
   if (input.body !== undefined && input.bodyFile !== undefined) {
     throw validationError("pass the body once: body or body file, not both", [
-      'Use `--body "..."` for short text, or `--body-file <path>` (`--body-file -` reads stdin)',
+      [
+        "Use ",
+        param("body"),
+        " for short text, or ",
+        param("bodyFile"),
+        " with a file path",
+      ],
     ]);
   }
   let body = input.body ?? "";
@@ -236,7 +266,7 @@ export async function normalizeCreate(
     if (input.bodyFile === "-") {
       throw validationError(
         "body file `-` (stdin) is only available on the CLI",
-        ["Pass the text in `body` instead"],
+        [["Pass the text in ", param("body"), " instead"]],
       );
     }
     const path = absolute(input.bodyFile, deps.cwd());
@@ -244,19 +274,24 @@ export async function normalizeCreate(
       body = await deps.fs.readText(path);
     } catch (e) {
       throw validationError(`cannot read body file ${path}: ${reason(e)}`, [
-        "Check the path, or pass the text with `--body`",
+        ["Check the path, or pass the text in ", param("body")],
       ]);
     }
   }
   if (body.length > MAX_BODY_CHARS) {
     throw validationError(
       `body is ${body.length} chars; the limit is ${MAX_BODY_CHARS}`,
-      ["Shorten the body, or attach the long text as a file with `--attach`"],
+      [
+        [
+          "Shorten the body, or attach the long text as a file with ",
+          param("attach"),
+        ],
+      ],
     );
   }
-  const to = addresses("--to", input.to);
-  const cc = addresses("--cc", input.cc);
-  const bcc = addresses("--bcc", input.bcc);
+  const to = addresses("to", input.to);
+  const cc = addresses("cc", input.cc);
+  const bcc = addresses("bcc", input.bcc);
 
   const attachInput = input.attach ?? [];
   if (attachInput.length > MAX_ATTACHMENTS) {
@@ -335,12 +370,21 @@ export async function checkAttachment(
 // Sender resolution
 // ---------------------------------------------------------------------------
 
-/** Map `--from` (account name or address) to the sender string Mail expects. */
+export interface ResolvedSender {
+  /** What `set sender` gets: `Full Name <address>`, or "" for Mail's default. */
+  sender: string;
+  /** The bare address the draft must be from, when one was asked for. */
+  address?: string;
+  /** The Mail account name, used to scope the read-back to its Drafts. */
+  account?: string;
+}
+
+/** Map `from` (account name or address) to the sender string Mail expects. */
 export function resolveSender(
   from: string | undefined,
   accounts: Account[],
-): string {
-  if (from === undefined) return "";
+): ResolvedSender {
+  if (from === undefined) return { sender: "" };
   const wanted = from.toLowerCase();
   for (const account of accounts) {
     if (!account.enabled) continue;
@@ -351,22 +395,28 @@ export function resolveSender(
         ? account.addresses[0]
         : undefined);
     if (address) {
-      return account.fullName ? `${account.fullName} <${address}>` : address;
+      return {
+        sender: account.fullName ? `${account.fullName} <${address}>` : address,
+        address,
+        account: account.name,
+      };
     }
   }
   const choices = accounts
     .filter((a) => a.enabled)
     .map((a) => `${a.name}: ${a.addresses.join(", ") || "(no address)"}`);
   throw new AxiError(
-    `No enabled Mail account matches --from ${from}`,
+    `No enabled Mail account matches the sender ${JSON.stringify(from)}`,
     "UNKNOWN_SENDER",
     [
-      ...(choices.length > 0
+      choices.length > 0
         ? [
-            `Pass one of these account names or addresses to --from: ${choices.join("; ")}`,
+            "Pass one of these account names or addresses in ",
+            param("from"),
+            `: ${choices.join("; ")}`,
           ]
-        : ["Ask the user to enable an account in Mail > Settings > Accounts"]),
-      "Or leave --from out to use Mail's default account",
+        : "Ask the user to enable an account in Mail > Settings > Accounts",
+      ["Or leave ", param("from"), " out to use Mail's default account"],
     ],
   );
 }
@@ -375,10 +425,16 @@ export function resolveSender(
 // argv building (values only ever travel as argv)
 // ---------------------------------------------------------------------------
 
-/** Settle time Mail gets to load attachments before the save. */
+/** Longest the script polls for attachments to register before the save. */
 export function settleMs(attachments: number): number {
   return attachments === 0 ? 0 : Math.min(2_000 + 1_000 * attachments, 15_000);
 }
+
+/**
+ * Fixed pause before `save`. The live probe on 2026-10-27 (iCloud) that
+ * landed a draft with its attachment used `delay 2` before saving.
+ */
+export const SAVE_PAUSE_MS = 2_000;
 
 /** argv for osa/create-draft.applescript; layout documented in that file. */
 export function buildCreateArgv(
@@ -391,6 +447,7 @@ export function buildCreateArgv(
     draft.body,
     sender,
     String(settleMs(draft.attach.length)),
+    String(SAVE_PAUSE_MS),
     ...counted(draft.to),
     ...counted(draft.cc),
     ...counted(draft.bcc),
@@ -408,8 +465,17 @@ const norm = (list: string[]) => list.map((a) => a.trim().toLowerCase()).sort();
 export function compareDraft(
   wanted: NormalizedCreate,
   saved: DraftDetail,
+  fromAddress?: string,
 ): string[] {
   const diffs: string[] = [];
+  if (
+    fromAddress !== undefined &&
+    !saved.from.toLowerCase().includes(fromAddress.toLowerCase())
+  ) {
+    diffs.push(
+      `from is ${JSON.stringify(saved.from)}, wanted ${JSON.stringify(fromAddress)}`,
+    );
+  }
   if (saved.subject.trim() !== wanted.subject) {
     diffs.push(
       `subject is ${JSON.stringify(saved.subject)}, wanted ${JSON.stringify(wanted.subject)}`,
@@ -459,22 +525,88 @@ async function fetchDraft(deps: CoreDeps, id: string): Promise<DraftDetail> {
   );
 }
 
+interface OutgoingRow {
+  id: string;
+  subject: string;
+}
+
+/** Mail's open outgoing messages (compose windows). Read-only. */
+async function listOutgoing(deps: CoreDeps): Promise<OutgoingRow[]> {
+  const out = await runJson<{ outgoing: OutgoingRow[] }>(deps.run, {
+    script: "list-outgoing",
+    argv: [],
+  });
+  return out.outgoing;
+}
+
+/**
+ * Close, without saving, every outgoing message this create opened: new
+ * since `before` and with the exact subject. Compose windows the user had
+ * open before are never touched. Returns how many of ours are still open.
+ *
+ * The create script already closes its own message on every path it
+ * controls; this catches the paths it does not (osascript killed by the
+ * timeout, a failed close after save).
+ */
+async function discardOurOutgoing(
+  deps: CoreDeps,
+  before: Set<string>,
+  subject: string,
+): Promise<number> {
+  const ours = (rows: OutgoingRow[]) =>
+    rows.filter((r) => !before.has(r.id) && r.subject.trim() === subject);
+  const open = ours(await listOutgoing(deps));
+  if (open.length === 0) return 0;
+  const closable = open.filter((r) => /^\d+$/.test(r.id)).map((r) => r.id);
+  if (closable.length > 0) {
+    await runScript(deps.run, { script: "discard-outgoing", argv: closable });
+  }
+  return ours(await listOutgoing(deps)).length;
+}
+
 export async function createDraft(
   input: CreateDraftInput,
   deps: CoreDeps = defaultDeps(),
 ): Promise<CreateDraftResult> {
   const draft = await normalizeCreate(input, deps);
   const before = await preflight(deps);
-  const sender = resolveSender(draft.from, before.accounts);
+  const from = resolveSender(draft.from, before.accounts);
   const known = new Set(before.draftIds);
+  const outgoingBefore = new Set((await listOutgoing(deps)).map((r) => r.id));
 
-  await runScript(deps.run, {
-    script: "create-draft",
-    argv: buildCreateArgv(draft, sender),
-  });
+  // Visible compose, parts added, attachments settled, save, close without
+  // saving (the saved draft survives the close). See AGENTS.md Mail.app notes.
+  let scriptError: unknown;
+  try {
+    await runScript(deps.run, {
+      script: "create-draft",
+      argv: buildCreateArgv(draft, from.sender),
+    });
+  } catch (e) {
+    scriptError = e;
+  }
+
+  // Never leave a compose window behind, on success or failure.
+  let left = 0;
+  try {
+    left = await discardOurOutgoing(deps, outgoingBefore, draft.subject);
+  } catch (e) {
+    if (scriptError === undefined) throw e;
+  }
+  if (scriptError !== undefined) {
+    if (left > 0 && scriptError instanceof AxiError) {
+      throw new AxiError(scriptError.message, scriptError.code, [
+        ...scriptError.steps,
+        ...composeLeftOpenSteps(draft.subject),
+      ]);
+    }
+    throw scriptError;
+  }
+  if (left > 0) throw composeLeftOpenError(draft.subject);
 
   // Read back until Mail shows a new draft that matches, or time runs out.
-  // Attachments in particular can land a moment after the draft itself.
+  // Candidates: ids that were not in Drafts before, with the exact subject,
+  // and (when a sender was asked for) in that account's Drafts.
   const started = deps.now();
   let lastSeen: DraftDetail | undefined;
   for (;;) {
@@ -490,8 +622,13 @@ export async function createDraft(
         if (e instanceof AxiError && e.code === "DRAFT_NOT_FOUND") continue;
         throw e;
       }
+      // Another account's draft with the same subject is not ours. An empty
+      // account means Mail could not say; the from check below still applies.
+      if (from.account && saved.account && saved.account !== from.account) {
+        continue;
+      }
       lastSeen = saved;
-      if (compareDraft(draft, saved).length === 0) {
+      if (compareDraft(draft, saved, from.address).length === 0) {
         return { draft: saved, verifiedAfterMs: deps.now() - started };
       }
     }
@@ -501,21 +638,25 @@ export async function createDraft(
 
   const seconds = Math.round(deps.verifyTimeoutMs / 1000);
   if (!lastSeen) {
+    const where = from.account ? `the ${from.account} Drafts` : "Drafts";
     throw new AxiError(
-      `Mail did not show the new draft in Drafts within ${seconds}s`,
+      `Mail did not show the new draft in ${where} within ${seconds}s`,
       "DRAFT_NOT_SAVED",
       [
-        `Run \`apple-mail-axi draft list\` to check whether it appeared late before creating it again, or you may get a duplicate`,
+        [
+          call("draft_list"),
+          " to check whether it appeared late before creating it again, or you may get a duplicate",
+        ],
       ],
     );
   }
-  const diffs = compareDraft(draft, lastSeen);
+  const diffs = compareDraft(draft, lastSeen, from.address);
   throw new AxiError(
     `Saved draft ${lastSeen.id} does not match the request: ${diffs.join("; ")}`,
     "DRAFT_MISMATCH",
     [
-      `Run \`apple-mail-axi draft view ${lastSeen.id}\` to inspect it`,
-      `Run \`apple-mail-axi draft delete ${lastSeen.id}\`, then create it again`,
+      [call("draft_view", { id: lastSeen.id }), " to inspect it"],
+      [call("draft_delete", { id: lastSeen.id }), ", then create it again"],
     ],
   );
 }
@@ -560,6 +701,6 @@ export async function deleteDraft(
   throw new AxiError(
     `Mail accepted the delete, but draft ${id} is still in Drafts`,
     "DELETE_NOT_CONFIRMED",
-    [`Run \`apple-mail-axi draft view ${id}\` to check, then rerun the delete`],
+    [[call("draft_view", { id }), " to check, then retry the delete"]],
   );
 }

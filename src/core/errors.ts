@@ -1,7 +1,12 @@
 /**
  * Errors shared by the CLI and the MCP server. Every failure carries a stable
- * `code` and at least one next step in `suggestions` (VISION.md Interface).
+ * `code` and at least one next step in `steps` (VISION.md Interface).
  * Only VALIDATION_ERROR exits 2; everything else exits 1.
+ *
+ * A step is written once, in the core, and rendered per way in by
+ * src/core/steps.ts: a `call(op, args)` part becomes a CLI command on the CLI
+ * and an MCP tool call under MCP, and a `param(key)` part becomes `--flag` or
+ * the MCP argument name. Plain strings are transport-neutral.
  */
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -16,18 +21,45 @@ export type ErrorCode =
   | "DRAFT_NOT_SAVED"
   | "DRAFT_MISMATCH"
   | "DELETE_NOT_CONFIRMED"
+  | "COMPOSE_LEFT_OPEN"
   | "UNSUPPORTED_PLATFORM"
   | "UNKNOWN";
 
+export type StepValue = string | number | boolean | string[];
+
+/** One piece of a next step. */
+export type StepPart =
+  | string
+  /** An operation from src/core/operations.ts, with example arguments. */
+  | { call: string; args?: Record<string, StepValue> }
+  /** A parameter of an operation, by its core input key. */
+  | { param: string };
+
+/** A next step: plain text, or parts rendered per way in. */
+export type Step = string | StepPart[];
+
+/** A next step that runs an operation (rendered per way in). */
+export function call(
+  op: string,
+  args?: Record<string, StepValue>,
+): { call: string; args?: Record<string, StepValue> } {
+  return args ? { call: op, args } : { call: op };
+}
+
+/** A parameter name (rendered as `--flag` or the MCP argument name). */
+export function param(key: string): { param: string } {
+  return { param: key };
+}
+
 export class AxiError extends Error {
   readonly code: ErrorCode;
-  readonly suggestions: string[];
+  readonly steps: Step[];
 
-  constructor(message: string, code: ErrorCode, suggestions: string[] = []) {
+  constructor(message: string, code: ErrorCode, steps: Step[] = []) {
     super(message);
     this.name = "AxiError";
     this.code = code;
-    this.suggestions = suggestions;
+    this.steps = steps;
   }
 }
 
@@ -36,12 +68,12 @@ export function exitCodeForError(error: { code: string }): number {
 }
 
 export const ISSUES_URL = "https://github.com/simkimsia/apple-mail-axi/issues";
-export const UNKNOWN_SUGGESTION = `Rerun with \`AXI_DEBUG=1\` to see the script and argv, then report the gap at ${ISSUES_URL}`;
+export const UNKNOWN_SUGGESTION = `Rerun with \`AXI_DEBUG=1\` in the environment (for MCP, in the server's env config) to see the script and argv on stderr, then report the gap at ${ISSUES_URL}`;
 
 /** Longest stretch of osascript stderr ever relayed in a message. */
 const RELAY_MAX = 200;
 
-export function validationError(message: string, help: string[]): AxiError {
+export function validationError(message: string, help: Step[]): AxiError {
   return new AxiError(message, "VALIDATION_ERROR", help);
 }
 
@@ -57,27 +89,30 @@ export function automationDeniedError(): AxiError {
     [
       AUTOMATION_FIX,
       'Under MCP, "the terminal" is the MCP client app (for example Claude); if no switch is listed, `tccutil reset AppleEvents` makes macOS ask again on the next run',
-      "Then rerun the same command",
+      "Then retry the same call",
     ],
   );
 }
 
 export function mailNotRunningError(): AxiError {
   return new AxiError("Mail.app is not running", "MAIL_NOT_RUNNING", [
-    `Run ${MAIL_NOT_RUNNING_FIX}, wait until Mail has loaded, then rerun the same command`,
+    `Run ${MAIL_NOT_RUNNING_FIX}, wait until Mail has loaded, then retry the same call`,
   ]);
 }
 
 export function mailNotSetUpError(): AxiError {
   return new AxiError("Mail.app has no accounts set up", "MAIL_NOT_SET_UP", [
-    "Ask the user to add an account in Mail > Settings > Accounts, then rerun the same command",
+    "Ask the user to add an account in Mail > Settings > Accounts, then retry the same call",
   ]);
 }
 
 export function mailTimeoutError(): AxiError {
   return new AxiError("Mail.app did not answer in time", "MAIL_TIMEOUT", [
-    "Mail may be busy syncing; wait a minute and rerun the same command",
-    "Run `apple-mail-axi draft list` before rerunning a create, so a late draft is not duplicated",
+    "Mail may be busy syncing; wait a minute and retry the same call",
+    [
+      call("draft_list"),
+      " before retrying a create, so a late draft is not duplicated",
+    ],
   ]);
 }
 
@@ -93,8 +128,27 @@ export function draftNotFoundError(id: string): AxiError {
   return new AxiError(
     `No draft with id ${id} in Mail's Drafts (only drafts are visible to apple-mail-axi)`,
     "DRAFT_NOT_FOUND",
-    ["Run `apple-mail-axi draft list` to see draft ids"],
+    [[call("draft_list"), " to see draft ids"]],
   );
+}
+
+/** Mail still holds a compose window (outgoing message) this tool opened. */
+export function composeLeftOpenError(subject: string): AxiError {
+  return new AxiError(
+    `Mail still has the compose window apple-mail-axi opened for ${JSON.stringify(subject)}, and closing it failed`,
+    "COMPOSE_LEFT_OPEN",
+    composeLeftOpenSteps(subject),
+  );
+}
+
+export function composeLeftOpenSteps(subject: string): Step[] {
+  return [
+    `Ask the user to close the compose window titled ${JSON.stringify(subject)} in Mail and choose Don't Save; a saved draft stays in Drafts`,
+    [
+      call("draft_list"),
+      " to check whether the draft was saved before creating it again",
+    ],
+  ];
 }
 
 /** First non-empty stderr line, osascript's path prefix stripped, capped. */
@@ -115,9 +169,10 @@ export function relayLine(stderr: string): string {
  * wins: our own `AMA_ERR:<CODE>` markers (thrown by the bundled scripts) come
  * first, then Apple Event error numbers.
  *
- * NOTE: the stderr shapes below are written from Apple's documented error
- * numbers, not yet captured verbatim from a live run. Replace the fixtures in
- * test/errors.test.ts with real captures during the first live run.
+ * Live run 1 (2026-10-27) confirmed the MAIL_NOT_RUNNING marker path end to
+ * end. The Apple Event number patterns (-1743, -600, -1712) are still written
+ * from Apple's documented numbers; test/errors.test.ts marks which fixtures
+ * are guessed.
  */
 export function mapOsascriptError(
   stderr: string,

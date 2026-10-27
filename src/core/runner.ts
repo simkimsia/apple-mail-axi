@@ -22,6 +22,11 @@ export const SCRIPTS = {
   "list-drafts": { file: "list-drafts.js", language: "JavaScript" },
   "view-draft": { file: "view-draft.js", language: "JavaScript" },
   "delete-draft": { file: "delete-draft.js", language: "JavaScript" },
+  "list-outgoing": { file: "list-outgoing.js", language: "JavaScript" },
+  "discard-outgoing": {
+    file: "discard-outgoing.applescript",
+    language: "AppleScript",
+  },
 } as const;
 
 export type ScriptName = keyof typeof SCRIPTS;
