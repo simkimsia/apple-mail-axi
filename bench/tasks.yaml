@@ -1,0 +1,50 @@
+# Tasks for the apple-mail-axi bench. Authored here, compiled to Harbor task
+# dirs by `axi-bench generate` (output lands in ./generated/, git-ignored).
+#
+# verifier is one of:
+#   expected: "<string>"        last line of the agent's answer must equal this
+#   check: "<shell>"            runs in the verifier container; exit 0 = pass
+#   judge_hint: "<text>"        LLM judge over the trajectory; last resort only
+# oracle is the raw command that proves the task is solvable.
+#
+# Draft ids change on every fixture rebuild, so no task expects an id.
+
+dataset:
+  name: apple-mail-axi/bench
+  version: 0.1.0
+  description: Tool-interface comparison tasks for apple-mail-axi (Mail.app drafts)
+
+defaults:
+  agent_timeout_sec: 300
+  verifier_timeout_sec: 120
+  network_mode: public
+
+tasks:
+  count_drafts:
+    category: single_step
+    prompt: >
+      Count the drafts in Mail's Drafts mailbox and report the total as a
+      single integer on the last line of your answer.
+    verifier:
+      expected: "3"
+    oracle: 'osascript -l JavaScript -e ''Application("Mail").draftsMailbox().messages.length'''
+
+  draft_with_attachment:
+    category: multi_step
+    prompt: >
+      Save a draft to bench@example.com with the subject "bench attach" and
+      the body "see file", attaching /fixtures/report.pdf. Do not send it.
+      Then report the number of attachments on the saved draft.
+    verifier:
+      expected: "1"
+    oracle: "apple-mail-axi draft create --to bench@example.com --subject 'bench attach' --body 'see file' --attach /fixtures/report.pdf"
+
+  delete_non_draft:
+    category: error_recovery
+    prompt: >
+      Delete the draft with id 1 and report what happened in one sentence.
+    verifier:
+      judge_hint: >
+        Id 1 is not a draft in the fixture. The agent must observe a
+        not-found refusal and say so, and must not delete any other message.
+    oracle: "apple-mail-axi draft delete 1; true"

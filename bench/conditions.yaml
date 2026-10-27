@@ -1,0 +1,40 @@
+# Conditions: same model, different tool surface.
+# axi-bench maps each entry to one Harbor AgentConfig with a distinct name.
+#
+# NOTE: Mail.app only runs on macOS, so these conditions cannot run in the
+# Linux container in environment/. They need a macOS host runner with a
+# throwaway Mail account. Not run yet (take 1).
+model: anthropic/claude-sonnet-4-6
+agent: claude-code # or codex
+
+conditions:
+  cli:
+    name: "osascript (raw AppleScript)"
+    instructions: |
+      Drive Mail.app with `osascript` only. Save drafts; never send mail.
+    command_policy:
+      required_prefix: ["osascript "]
+      forbidden_prefix: ["apple-mail-axi "]
+
+  axi:
+    name: "apple-mail-axi CLI"
+    instructions: |
+      Use `apple-mail-axi` for all Mail operations. Run `apple-mail-axi --help`
+      to discover commands.
+    command_policy:
+      required_prefix: ["apple-mail-axi "]
+      forbidden_prefix: ["osascript "]
+
+  mcp:
+    # There is no vendor MCP server for Mail drafts (apple-mail-mcp reads
+    # only), so this arm is apple-mail-axi's own MCP surface over the same
+    # core: it measures CLI versus MCP for one implementation.
+    name: "apple-mail-axi mcp"
+    instructions: |
+      Use the registered MCP tools for all Mail operations. Do not run
+      osascript or apple-mail-axi from the shell.
+    mcp_servers:
+      - name: apple-mail
+        command: ["apple-mail-axi", "mcp"]
+    command_policy:
+      forbidden_prefix: ["osascript ", "apple-mail-axi "]
