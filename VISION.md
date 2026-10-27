@@ -32,11 +32,14 @@ There are two ways in, the CLI and `apple-mail-axi mcp`, and both run over one c
 - Output is for agents to understand and is not a stable API for hand-written parsers.
 - Errors carry a stable code and a next step the caller can act on.
 
-Each of these conditions gets its own error with the exact fix:
+Each of these conditions gets its own error that prints this fix:
 
-- Missing Automation or Full Disk Access permission.
-- A missing `apple-mail-mcp` install.
-- Mail.app not running.
+| Error | Fix |
+| --- | --- |
+| Missing Automation permission | System Settings → Privacy & Security → Automation, then allow the terminal to control Mail. |
+| Missing Full Disk Access, needed only for reading | System Settings → Privacy & Security → Full Disk Access, then add the terminal. |
+| `apple-mail-mcp` not installed | `pipx install apple-mail-mcp` |
+| Mail.app not running | `open -a Mail` |
 
 ## Safety
 
