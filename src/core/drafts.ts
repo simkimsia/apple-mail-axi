@@ -544,9 +544,10 @@ async function listOutgoing(deps: CoreDeps): Promise<OutgoingRow[]> {
  * since `before` and with the exact subject. Compose windows the user had
  * open before are never touched. Returns how many of ours are still open.
  *
- * The create script already closes its own message on every path it
- * controls; this catches the paths it does not (osascript killed by the
- * timeout, a failed close after save).
+ * This is how create closes its compose window after a save, once the
+ * read-back is done. The script closes its own message only on its error
+ * path; this also catches the paths it never reaches (osascript killed by
+ * the timeout).
  */
 async function discardOurOutgoing(
   deps: CoreDeps,
@@ -573,50 +574,19 @@ async function discardOurOutgoing(
 /** How many times the core looks for a leftover compose window after closing. */
 const DISCARD_CHECKS = 3;
 
-export async function createDraft(
-  input: CreateDraftInput,
-  deps: CoreDeps = defaultDeps(),
-): Promise<CreateDraftResult> {
-  const draft = await normalizeCreate(input, deps);
-  const before = await preflight(deps);
-  const from = resolveSender(draft.from, before.accounts);
-  const known = new Set(before.draftIds);
-  const outgoingBefore = new Set((await listOutgoing(deps)).map((r) => r.id));
-
-  // Visible compose, parts added, attachments settled, save, close without
-  // saving (the saved draft survives the close). See AGENTS.md Mail.app notes.
-  let scriptError: unknown;
-  try {
-    await runScript(deps.run, {
-      script: "create-draft",
-      argv: buildCreateArgv(draft, from.sender),
-    });
-  } catch (e) {
-    scriptError = e;
-  }
-
-  // Never leave a compose window behind, on success or failure.
-  let left = 0;
-  try {
-    left = await discardOurOutgoing(deps, outgoingBefore, draft.subject);
-  } catch (e) {
-    if (scriptError === undefined) throw e;
-  }
-  if (scriptError !== undefined) {
-    if (left > 0 && scriptError instanceof AxiError) {
-      throw new AxiError(scriptError.message, scriptError.code, [
-        ...scriptError.steps,
-        ...composeLeftOpenSteps(draft.subject),
-      ]);
-    }
-    throw scriptError;
-  }
-  if (left > 0) throw composeLeftOpenError(draft.subject);
-
-  // Read back until Mail shows a new draft that matches, or time runs out.
-  // Candidates: ids that were not in Drafts before, with the exact subject,
-  // and (when a sender was asked for) in that account's Drafts.
-  const started = deps.now();
+/**
+ * Read the saved draft back until Mail shows a new draft that matches, or
+ * the budget that began at `started` runs out. Candidates: ids that were
+ * not in Drafts before, with the exact subject, and (when a sender was
+ * asked for) in that account's Drafts. Always looks at least once.
+ */
+async function awaitSavedDraft(
+  deps: CoreDeps,
+  draft: NormalizedCreate,
+  from: ResolvedSender,
+  known: Set<string>,
+  started: number,
+): Promise<{ match?: DraftDetail; lastSeen?: DraftDetail }> {
   let lastSeen: DraftDetail | undefined;
   for (;;) {
     const fresh = (await draftIds(deps))
@@ -638,17 +608,24 @@ export async function createDraft(
       }
       lastSeen = saved;
       if (compareDraft(draft, saved, from.address).length === 0) {
-        return { draft: saved, verifiedAfterMs: deps.now() - started };
+        return { match: saved, lastSeen };
       }
     }
-    if (deps.now() - started >= deps.verifyTimeoutMs) break;
+    if (deps.now() - started >= deps.verifyTimeoutMs) return { lastSeen };
     await deps.sleep(deps.verifyIntervalMs);
   }
+}
 
+function readBackError(
+  draft: NormalizedCreate,
+  from: ResolvedSender,
+  lastSeen: DraftDetail | undefined,
+  deps: CoreDeps,
+): AxiError {
   const seconds = Math.round(deps.verifyTimeoutMs / 1000);
   if (!lastSeen) {
     const where = from.account ? `the ${from.account} Drafts` : "Drafts";
-    throw new AxiError(
+    return new AxiError(
       `Mail did not show the new draft in ${where} within ${seconds}s`,
       "DRAFT_NOT_SAVED",
       [
@@ -660,7 +637,7 @@ export async function createDraft(
     );
   }
   const diffs = compareDraft(draft, lastSeen, from.address);
-  throw new AxiError(
+  return new AxiError(
     `Saved draft ${lastSeen.id} does not match the request: ${diffs.join("; ")}`,
     "DRAFT_MISMATCH",
     [
@@ -668,6 +645,72 @@ export async function createDraft(
       [call("draft_delete", { id: lastSeen.id }), ", then create it again"],
     ],
   );
+}
+
+/**
+ * Create sequence (see AGENTS.md Mail.app notes for the evidence):
+ *
+ * 1. Validate everything that can be checked without Mail.
+ * 2. Preflight: accounts (to resolve the sender) and the Drafts ids now.
+ * 3. Note the compose windows already open, so the user's are never touched.
+ * 4. The script opens a visible compose, adds the parts, saves, and returns
+ *    with the window still open (it closes it itself only on its own error).
+ * 5. While the window is open, poll the saved draft until recipients,
+ *    subject, sender and attachment count match. Live run 2 showed that
+ *    closing right after `save` drops the attachment.
+ * 6. Close our compose window without saving, on every path.
+ * 7. On a match, read the draft once more after the close to confirm it
+ *    survived; otherwise raise the read-back error.
+ */
+export async function createDraft(
+  input: CreateDraftInput,
+  deps: CoreDeps = defaultDeps(),
+): Promise<CreateDraftResult> {
+  const draft = await normalizeCreate(input, deps);
+  const before = await preflight(deps);
+  const from = resolveSender(draft.from, before.accounts);
+  const known = new Set(before.draftIds);
+  const outgoingBefore = new Set((await listOutgoing(deps)).map((r) => r.id));
+
+  let failure: unknown;
+  let verified: DraftDetail | undefined;
+  const started = deps.now();
+  try {
+    await runScript(deps.run, {
+      script: "create-draft",
+      argv: buildCreateArgv(draft, from.sender),
+    });
+    const seen = await awaitSavedDraft(deps, draft, from, known, started);
+    if (seen.match) verified = seen.match;
+    else failure = readBackError(draft, from, seen.lastSeen, deps);
+  } catch (e) {
+    failure = e;
+  }
+
+  // Never leave a compose window of ours behind, on success or failure.
+  let left = 0;
+  try {
+    left = await discardOurOutgoing(deps, outgoingBefore, draft.subject);
+  } catch (e) {
+    if (failure === undefined) throw e;
+  }
+  if (failure !== undefined) {
+    if (left > 0 && failure instanceof AxiError) {
+      throw new AxiError(failure.message, failure.code, [
+        ...failure.steps,
+        ...composeLeftOpenSteps(draft.subject),
+      ]);
+    }
+    throw failure;
+  }
+  if (left > 0) throw composeLeftOpenError(draft.subject);
+
+  // The window is closed now; confirm the saved draft survived the close.
+  const after = await awaitSavedDraft(deps, draft, from, known, started);
+  if (after.match) {
+    return { draft: after.match, verifiedAfterMs: deps.now() - started };
+  }
+  throw readBackError(draft, from, after.lastSeen ?? verified, deps);
 }
 
 export async function listDrafts(

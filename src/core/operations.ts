@@ -47,7 +47,7 @@ export const OPERATIONS: OperationSpec[] = [
     cli: ["draft", "create"],
     write: true,
     summary:
-      "Save a new plain-text draft in Mail's Drafts (never sends). Succeeds only after the saved draft is read back and its recipients, subject and attachment count match.",
+      "Save a new plain-text draft in Mail's Drafts (never sends). Succeeds only after the saved draft is read back and its recipients, subject and attachment count match. A Mail compose window shows on screen until then and is closed without sending.",
     params: [
       {
         key: "to",

@@ -5,10 +5,20 @@
  * Nothing here spawns osascript.
  *
  * It also models Mail's open outgoing messages (compose windows), following
- * what live run 1 and the probes showed: create-draft opens a visible one,
- * closes it after save and on its own error paths, and leaves it open only
- * when osascript dies mid-script or the close itself fails.
+ * what live run 1 and the probes showed: create-draft opens a visible one
+ * and closes it on its own error paths; osascript dying mid-script leaves
+ * it open.
+ *
+ * Live run 2 showed `save` returns before Mail has written the attachments
+ * into the saved draft, and closing the compose window first drops them.
+ * The fake models that: a saved draft gets its attachments only when a
+ * later call finds the compose window still open at least
+ * `attachWriteMs` after the save. Whether the script closes the window
+ * right after save is read from the real script text (or `createScript`),
+ * so the fake follows whatever osa/create-draft.applescript does.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CoreDeps, DraftDetail, FileSystem } from "../src/core/drafts.js";
 import { defaultDeps } from "../src/core/drafts.js";
 import type { OsaOutcome, OsaRequest, OsaRunner } from "../src/core/runner.js";
@@ -48,8 +58,15 @@ export interface FakeMailOptions {
   rejectAttachment?: number;
   /** osascript is killed mid-script: no save, compose window left open. */
   killCreate?: boolean;
-  /** The script's close after save fails, leaving the window open. */
-  closeFails?: boolean;
+  /**
+   * How long after `save` Mail needs the compose window to stay open to
+   * write the attachments into the saved draft. Default 0: any later call.
+   */
+  attachWriteMs?: number;
+  /** The create script text to follow; default osa/create-draft.applescript. */
+  createScript?: string;
+  /** Every view-draft call fails with this outcome. */
+  failViews?: OsaOutcome;
   /** Outgoing messages cannot be closed at all (the hidden-compose bug). */
   stuckOutgoing?: boolean;
   /** Compose windows the user already has open. */
@@ -97,23 +114,76 @@ export function draft(
   };
 }
 
+/**
+ * Whether a create script closes its compose window right after a
+ * successful `save` (take 2 did; Live run 2 showed that drops attachments).
+ * True when the success path after the main try block calls discardMessage.
+ */
+export function closesAfterSave(script: string): boolean {
+  const code = script
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("--"))
+    .join("\n");
+  const saveAt = code.lastIndexOf("save draftMessage");
+  const tryEnd = code.indexOf("\n\tend try", saveAt);
+  const runEnd = code.indexOf("end run", tryEnd);
+  if (saveAt === -1 || tryEnd === -1 || runEnd === -1) {
+    throw new Error("unrecognised create script layout");
+  }
+  return /my discardMessage\(draftMessage\)/.test(code.slice(tryEnd, runEnd));
+}
+
+const REAL_CREATE_SCRIPT = readFileSync(
+  join(import.meta.dirname, "..", "osa", "create-draft.applescript"),
+  "utf-8",
+);
+
+interface PendingAttachments {
+  draftId: string;
+  composeId: string;
+  savedAt: number;
+  attachments: DraftDetail["attachments"];
+}
+
 export class FakeMail {
   readonly requests: OsaRequest[] = [];
   readonly drafts: DraftDetail[];
   readonly outgoing: FakeOutgoing[];
+  /** Virtual clock in ms, advanced by fakeDeps' sleep. */
+  clock = 0;
   private nextId = 9000;
   private nextOutgoingId = 500;
   private views = 0;
+  private pending: PendingAttachments[] = [];
+  private readonly closeAfterSave: boolean;
 
   constructor(private readonly opts: FakeMailOptions = {}) {
     this.drafts = [...(opts.drafts ?? [])];
     this.outgoing = [...(opts.outgoing ?? [])];
+    this.closeAfterSave = closesAfterSave(
+      opts.createScript ?? REAL_CREATE_SCRIPT,
+    );
+  }
+
+  /** Mail finishes writing attachments for drafts whose window is open. */
+  private flushAttachments(): void {
+    const wait = this.opts.attachWriteMs ?? 0;
+    this.pending = this.pending.filter((p) => {
+      const open = this.outgoing.some((o) => o.id === p.composeId);
+      if (!open || this.clock - p.savedAt < wait) return true;
+      const d = this.drafts.find((x) => x.id === p.draftId);
+      if (d) d.attachments = p.attachments;
+      return false;
+    });
   }
 
   private close(id: string): void {
     if (this.opts.stuckOutgoing) return;
     const i = this.outgoing.findIndex((o) => o.id === id);
-    if (i !== -1) this.outgoing.splice(i, 1);
+    if (i === -1) return;
+    this.outgoing.splice(i, 1);
+    // Closed before Mail wrote them: the attachments are lost for good.
+    this.pending = this.pending.filter((p) => p.composeId !== id);
   }
 
   /** Requests for one script, in order. */
@@ -124,6 +194,7 @@ export class FakeMail {
   runner: OsaRunner = async (request) => {
     this.requests.push(request);
     if (this.opts.fail) return this.opts.fail;
+    this.flushAttachments();
     const ok = (value: unknown): OsaOutcome => ({
       kind: "ok",
       stdout: JSON.stringify(value),
@@ -159,6 +230,7 @@ export class FakeMail {
       }
       case "view-draft": {
         this.views++;
+        if (this.opts.failViews) return this.opts.failViews;
         const d = this.drafts.find((x) => x.id === request.argv[0]);
         if (!d) return notFound(request.argv[0]);
         const late = this.opts.attachmentsAfterViews ?? 0;
@@ -189,9 +261,18 @@ export class FakeMail {
             stderr: `/x/osa/create-draft.applescript: execution error: AMA_ERR:ATTACHMENT_REJECTED:${files[bad]} (9003)\n`,
           };
         }
-        if (!this.opts.saveNothing)
-          this.drafts.push(this.fromCreateArgv(request.argv));
-        if (!this.opts.closeFails) this.close(compose.id);
+        if (!this.opts.saveNothing) {
+          const saved = this.fromCreateArgv(request.argv);
+          // `save` returns before Mail writes the attachments in.
+          this.pending.push({
+            draftId: saved.id,
+            composeId: compose.id,
+            savedAt: this.clock,
+            attachments: saved.attachments,
+          });
+          this.drafts.push({ ...saved, attachments: [] });
+        }
+        if (this.closeAfterSave) this.close(compose.id);
         return { kind: "ok", stdout: "saved\n" };
       }
       case "list-outgoing":
@@ -292,13 +373,12 @@ export function fakeDeps(
   fs: FileSystem = fakeFs(),
   extra: Partial<CoreDeps> = {},
 ): CoreDeps {
-  let clock = 0;
   return defaultDeps({
     run: mail.runner,
     fs,
-    now: () => clock,
+    now: () => mail.clock,
     sleep: async (ms) => {
-      clock += ms;
+      mail.clock += ms;
     },
     cwd: () => "/work",
     verifyTimeoutMs: 5_000,

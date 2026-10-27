@@ -1,12 +1,18 @@
 -- apple-mail-axi create one draft (AppleScript).
 -- Every value arrives through argv; nothing is spliced into this text.
--- The message is saved to Drafts and its compose window is then closed
--- without saving again. This script has no other way out for the message.
+-- The message is saved to Drafts and its compose window is LEFT OPEN on
+-- success: the core reads the saved draft back while the window is still
+-- open, then closes it without saving (osa/discard-outgoing.applescript).
+-- On any error after the message is made, this script closes it itself.
 --
 -- Path confirmed live on 2026-10-27 (macOS Darwin 24.6.0, iCloud): a
 -- visible compose, parts added, a pause, save, then close saving no. The
 -- saved draft survives the close. A hidden compose (visible:false) never
 -- reached Drafts and could not be closed, so it is not used.
+-- Live run 2 (same day): closing the window right after `save` dropped the
+-- attachment from the saved draft; with the window kept open for 3 s after
+-- `save` it stayed. `save` returns before Mail has written the attachment,
+-- so this script must not close the window after a successful save.
 --
 -- argv layout (built by src/core/drafts.ts buildCreateArgv):
 --   1 subject, 2 body, 3 sender ("" = Mail's default),
@@ -25,7 +31,7 @@ on takeList(argv, startIndex)
 	return {values, startIndex + n + 1}
 end takeList
 
--- Close our own compose window without saving. Never raises.
+-- Close our own compose window without saving (error path only). Never raises.
 on discardMessage(theMessage)
 	if theMessage is missing value then return
 	try
@@ -99,8 +105,7 @@ on run argv
 		error errText number errNum
 	end try
 
-	-- Saved. Close the compose window; the draft stays in Drafts. If the
-	-- close fails, the core's outgoing check closes it by id or reports it.
-	my discardMessage(draftMessage)
+	-- Saved. Do not close here: Mail is still writing attachments into the
+	-- saved draft. The core verifies the draft, then closes this window.
 	return "saved"
 end run

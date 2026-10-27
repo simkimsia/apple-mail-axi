@@ -37,7 +37,14 @@ describe("createDraft verification", () => {
       "preflight",
       "list-outgoing",
       "create-draft",
+      // read back while our compose window is still open
+      "list-drafts",
+      "view-draft",
+      // close it, check it is gone
       "list-outgoing",
+      "discard-outgoing",
+      "list-outgoing",
+      // confirm the draft survived the close
       "list-drafts",
       "view-draft",
     ]);
@@ -54,7 +61,8 @@ describe("createDraft verification", () => {
     const mail = new FakeMail({ attachmentsAfterViews: 2 });
     const r = await createDraft(input, fakeDeps(mail, files));
     expect(r.draft.attachments).toHaveLength(2);
-    expect(mail.calls("view-draft")).toHaveLength(3);
+    // three looks while the window is open, one after the close
+    expect(mail.calls("view-draft")).toHaveLength(4);
     expect(r.verifiedAfterMs).toBe(2_000);
   });
 
