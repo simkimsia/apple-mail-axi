@@ -1,0 +1,65 @@
+{
+  "name": "@simkimsia/apple-mail-axi",
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.0",
+  "description": "Agent-first CLI and MCP server for Apple Mail drafts on macOS: create, list, view and delete plain-text drafts with attachments, verified after every save, and never sends mail",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/simkimsia/apple-mail-axi.git"
+  },
+  "keywords": [
+    "apple-mail",
+    "mail",
+    "macos",
+    "drafts",
+    "mcp",
+    "cli",
+    "agent",
+    "axi",
+    "toon"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "bin": {
+    "apple-mail-axi": "./dist/bin/apple-mail-axi.js"
+  },
+  "files": [
+    "dist",
+    "osa",
+    "skills/apple-mail-axi",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx bin/apple-mail-axi.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepublishOnly": "npm run build"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@toon-format/toon": "^2.1.0",
+    "axi-sdk-js": "^0.1.11",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prettier": "^3.8.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

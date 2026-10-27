@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # release-please opens its release PR with GITHUB_TOKEN, which creates a
+    # pull_request run that can only sit in action_required. Its output set is
+    # exactly these files, so excluding them means no run is ever created.
+    paths-ignore:
+      - .release-please-manifest.json
+      - CHANGELOG.md
+      - package.json
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Version comes from the packageManager field in package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run format:check
+      - run: pnpm test
